@@ -1,0 +1,85 @@
+/* Главное окно */
+QMainWindow {
+    background-color: #181A1F;
+}
+
+/* Панели управления */
+QWidget#TopBar, QWidget#BottomBar {
+    background-color: #20242C;
+    border: 1px solid #303643;
+}
+
+/* Кнопки управления */
+QToolButton {
+    background-color: #262B35;
+    border: 1px solid #343B48;
+    border-radius: 8px;
+    color: #EAECEF;
+    font-weight: bold;
+    padding: 5px;
+}
+
+QToolButton:hover {
+    background-color: #2F3642;
+    border: 1px solid #4A5260;
+}
+
+/* Кнопка Play/Pause */
+QToolButton#PlayButton {
+    background-color: #FF8A3D;
+    color: #14181F;
+    border-radius: 10px;
+}
+
+QToolButton#PlayButton:hover {
+    background-color: #FF9A54;
+}
+
+/* Заголовки треков */
+QFrame#TrackHeaderRow {
+    background-color: #20242C;
+    border: 1px solid #2F3540;
+}
+
+QFrame#TrackHeaderRow[selected="true"] {
+    background-color: #242A34;
+}
+
+/* Слайдеры */
+QSlider::groove:horizontal {
+    height: 6px;
+    background: #2D3340;
+    border-radius: 3px;
+}
+
+QSlider::handle:horizontal {
+    width: 14px;
+    margin: -4px 0;
+    background: #FF8A3D;
+    border-radius: 7px;
+}
+
+/* Кнопки Solo/Mute */
+QPushButton {
+    background-color: #262B35;
+    border: 1px solid #343B48;
+    border-radius: 4px;
+    color: #EAECEF;
+    font-weight: bold;
+}
+
+QPushButton:hover {
+    background-color: #2F3642;
+}
+
+QPushButton[active="true"] {
+    background-color: #FF8A3D;
+    color: #14181F;
+}
+
+
+QScrollBar::handle:horizontal {
+    background: #4A5260;
+    border-radius: 6px;
+    min-width: 20px;
+}
