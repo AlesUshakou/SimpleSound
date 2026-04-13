@@ -40,8 +40,8 @@ A lightweight multitrack audio editor built with Python and PySide6. Load severa
 ### Install
 
 ```bash
-git clone https://github.com/<your-user>/simplesound.git
-cd simplesound
+git clone https://github.com/AlesUshakou/SimpleSound.git
+cd SimpleSound
 python -m venv .venv
 source .venv/bin/activate         # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
