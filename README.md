@@ -101,29 +101,6 @@ Full list is available in-app via **Help → Help & Shortcuts** (or `F1`).
 - **Drag segment edge** — trim it.
 - **Right-click** — context menu (add automation point, delete, merge, etc.).
 
----
-
-## Project structure
-
-```
-simplesound/
-├── main.py
-├── assets/
-│   └── icons/              # SVG icons (app + toolbar)
-├── core/
-│   ├── models.py           # Project / Track / Segment / Automation
-│   ├── audio_engine.py     # PortAudio-based real-time mixer
-│   ├── waveform_cache.py   # Pre-rendered waveform tiles
-│   └── theme.py            # Colors
-├── ui/
-│   ├── main_window.py
-│   ├── canvas.py           # Timeline widget
-│   ├── widgets.py          # Header panel, transport bar, meters
-│   ├── help_dialog.py
-│   └── loaders.py          # Threaded audio file loader
-└── styles/
-    └── theme.qss
-```
 
 ---
 
