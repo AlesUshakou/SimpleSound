@@ -18,11 +18,11 @@ A lightweight multitrack audio editor. Load several tracks, align them, cut and 
 - **Solo / Mute** per track, number keys `1…9` for quick solo.
 - **Undo / Redo** with full project snapshots.
 - **Project save/load** (`.ssproj`, JSON format — references audio files by path).
-- **Dark theme** with SVG icons.
+
 
 ---
 
-## Screenshots
+## Screenshot
 
 <p align="center">
   <img src="./assets/Screenshot.png" alt="SimpleSound screenshot">
