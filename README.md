@@ -1,6 +1,6 @@
 # SimpleSound
 
-A lightweight multitrack audio editor built with Python and PySide6. Load several tracks, align them, cut and fade, and play the result back in real time.
+A lightweight multitrack audio editor. Load several tracks, align them, cut and fade, and play the result back in real time.
 
 <p align="center">
   <img src="assets/icons/app.svg" width="140" alt="SimpleSound">
