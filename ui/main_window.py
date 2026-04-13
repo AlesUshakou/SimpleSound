@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from pydub import AudioSegment
 from PySide6.QtCore import QEvent, Qt, QThread, QTimer
-from PySide6.QtGui import QAction, QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QFont, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -37,8 +37,15 @@ from core.models import (
     TrackSegment,
 )
 from ui.canvas import TimelineCanvas
+from ui.help_dialog import HelpDialog
 from ui.loaders import AudioFileLoader
 from ui.widgets import BottomTransportBar, HorizontalMeter, TrackHeaderPanel
+
+
+_APP_ICON_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'assets', 'icons', 'app.svg',
+)
 
 
 class MainWindow(QMainWindow):
@@ -55,6 +62,8 @@ class MainWindow(QMainWindow):
         self.audio_cache: Dict[str, dict] = {}
         self.shortcuts: List[QShortcut] = []
         self.setWindowTitle('SimpleSound Multitrack Editor')
+        if os.path.exists(_APP_ICON_PATH):
+            self.setWindowIcon(QIcon(_APP_ICON_PATH))
         self.resize(1720, 940)
         self.setMinimumSize(1320, 760)
         self.setStyleSheet('QMainWindow{background:#181A1F;}')
@@ -126,9 +135,10 @@ class MainWindow(QMainWindow):
         self.status_label = QLabel('Ready')
         self.statusBar().addWidget(self.status_label, 1)
 
-        # Copyright-ссылка справа в status bar (hover подсвечивает оранжевым)
+        # Copyright справа в status bar (без подчёркивания, hover — оранжевый)
         self.copyright_label = QLabel(
-            '<a href="https://www.linkedin.com/in/ales-ushakou">© Aleš Ushakou, 2026</a>'
+            '<a href="https://www.linkedin.com/in/ales-ushakou" '
+            'style="color:#9BA6B2;text-decoration:none;">© Aleš Ushakou, 2026</a>'
         )
         self.copyright_label.setOpenExternalLinks(True)
         self.copyright_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
@@ -136,7 +146,8 @@ class MainWindow(QMainWindow):
         self.copyright_label.setStyleSheet(
             'QLabel { padding: 0 12px; font-size: 11px; }'
             'QLabel a { color:#9BA6B2; text-decoration:none; }'
-            'QLabel a:hover { color: #FF8A3D; }'
+            'QLabel a:hover { color:#FF8A3D; text-decoration:none; }'
+            'QLabel a:visited { color:#9BA6B2; text-decoration:none; }'
         )
         self.statusBar().addPermanentWidget(self.copyright_label)
 
@@ -187,6 +198,7 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu('File')
         edit_menu = self.menuBar().addMenu('Edit')
+        help_menu = self.menuBar().addMenu('Help')
         self.act_open_tracks = QAction('Open Tracks...', self)
         self.act_open_tracks.setShortcut(QKeySequence.Open)
         self.act_open_project = QAction('Open Project...', self)
@@ -216,7 +228,7 @@ class MainWindow(QMainWindow):
         self.act_delete = QAction('Delete', self)
         self.act_delete.setShortcut(QKeySequence.Delete)
         self.act_delete.setShortcutContext(Qt.ApplicationShortcut)
-        self.act_merge = QAction('Merge Selected Segments', self)
+        self.act_merge = QAction('Close Gaps Between Segments', self)
         self.act_merge.setShortcut(QKeySequence('M'))
         self.act_merge.setShortcutContext(Qt.ApplicationShortcut)
         edit_menu.addAction(self.act_undo)
@@ -226,6 +238,15 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.act_paste)
         edit_menu.addAction(self.act_delete)
         edit_menu.addAction(self.act_merge)
+
+        # Help menu
+        self.act_help = QAction('Help && Shortcuts', self)
+        self.act_help.setShortcut(QKeySequence('F1'))
+        self.act_help.setShortcutContext(Qt.ApplicationShortcut)
+        self.act_about = QAction('About SimpleSound', self)
+        help_menu.addAction(self.act_help)
+        help_menu.addSeparator()
+        help_menu.addAction(self.act_about)
 
         self.act_open_tracks.triggered.connect(self.open_files)
         self.act_open_project.triggered.connect(self.open_project_dialog)
@@ -237,6 +258,16 @@ class MainWindow(QMainWindow):
         self.act_paste.triggered.connect(self.paste_clipboard)
         self.act_delete.triggered.connect(self.canvas.delete_selected)
         self.act_merge.triggered.connect(self.merge_selected_segments)
+        self.act_help.triggered.connect(self.show_help)
+        self.act_about.triggered.connect(lambda: self.show_help(tab=2))
+
+    def show_help(self, tab: int = 0) -> None:
+        dlg = HelpDialog(self)
+        try:
+            dlg.tabs.setCurrentIndex(int(tab))
+        except Exception:
+            pass
+        dlg.exec()
 
     def _connect_signals(self) -> None:
         self.header_panel.remove_requested.connect(self.remove_track)
@@ -283,6 +314,7 @@ class MainWindow(QMainWindow):
         add_shortcut('M', self.merge_selected_segments)
         add_shortcut(Qt.Key_Home, self.jump_to_start)
         add_shortcut(Qt.Key_End, self.jump_to_end)
+        add_shortcut('0', self.reset_zoom)
         for index in range(1, 10):
             add_shortcut(str(index), lambda idx=index - 1: self.solo_track_by_number(idx))
 
@@ -751,7 +783,7 @@ class MainWindow(QMainWindow):
     def merge_selected_segments(self) -> None:
         before = self.canvas._mergeable_selected_segments()
         if len(before) < 2:
-            self.status_label.setText('Select 2+ segments on the same track to merge')
+            self.status_label.setText('Select 2+ segments on the same track to close gaps')
             return
         self.canvas.merge_selected_segments()
         self._sync_ui(True)

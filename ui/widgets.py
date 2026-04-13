@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPen
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -22,6 +22,14 @@ from core.theme import Theme
 
 
 # ---------- helpers ----------
+
+_ICONS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'icons')
+
+
+def icon(name: str) -> QIcon:
+    path = os.path.join(_ICONS_DIR, f'{name}.svg')
+    return QIcon(path) if os.path.exists(path) else QIcon()
+
 
 def db_to_meter_ratio(db: float) -> float:
     db = max(-60.0, min(6.0, float(db)))
@@ -152,10 +160,16 @@ class TrackHeaderRow(QFrame):
         top.addWidget(self.num_label)
         top.addWidget(self.name_label, 1)
 
-        self.btn_solo = QPushButton('S')
-        self.btn_mute = QPushButton('M')
-        self.btn_reset = QPushButton('A')
-        self.btn_delete = QPushButton('✕')
+        self.btn_solo = QPushButton()
+        self.btn_mute = QPushButton()
+        self.btn_reset = QPushButton()
+        self.btn_delete = QPushButton()
+        self.btn_solo.setIcon(icon('solo'))
+        self.btn_mute.setIcon(icon('mute'))
+        self.btn_reset.setIcon(icon('automation'))
+        self.btn_delete.setIcon(icon('delete'))
+        for btn in (self.btn_solo, self.btn_mute, self.btn_reset, self.btn_delete):
+            btn.setIconSize(QSize(16, 16))
         self.btn_solo.setToolTip('Solo track')
         self.btn_mute.setToolTip('Mute track')
         self.btn_reset.setToolTip('Reset automation')
@@ -322,20 +336,26 @@ class BottomTransportBar(QWidget):
         controls.setSpacing(10)
 
         self.btn_jump_start = QToolButton()
-        self.btn_jump_start.setText('|<')
+        self.btn_jump_start.setIcon(icon('jump_start'))
         self.btn_jump_start.setToolTip('Jump to start (Home)')
+
         self.btn_play_pause = QToolButton()
         self.btn_play_pause.setObjectName('PlayButton')
-        self.btn_play_pause.setText('▶')
+        self._icon_play = icon('play')
+        self._icon_pause = icon('pause')
+        self.btn_play_pause.setIcon(self._icon_play)
         self.btn_play_pause.setToolTip('Play / Pause (Space)')
+
         self.btn_jump_end = QToolButton()
-        self.btn_jump_end.setText('>|')
+        self.btn_jump_end.setIcon(icon('jump_end'))
         self.btn_jump_end.setToolTip('Jump to end (End)')
+
         self.btn_cut = QToolButton()
-        self.btn_cut.setText('✂')
+        self.btn_cut.setIcon(icon('cut'))
         self.btn_cut.setToolTip('Cut at playhead (C)')
+
         self.btn_merge = QToolButton()
-        self.btn_merge.setText('Merge')
+        self.btn_merge.setIcon(icon('merge'))
         self.btn_merge.setToolTip('Merge selected segments (M)')
 
         button_font = QFont('Segoe UI', 10)
@@ -344,16 +364,14 @@ class BottomTransportBar(QWidget):
             'color:#EAECEF;font-weight:700;}'
             'QToolButton:hover{background:#2F3642;border:1px solid #4A5260;}'
         )
-        for btn in (self.btn_jump_start, self.btn_jump_end, self.btn_cut):
+        for btn in (self.btn_jump_start, self.btn_jump_end, self.btn_cut, self.btn_merge):
             btn.setFixedSize(44, 34)
+            btn.setIconSize(QSize(18, 18))
             btn.setCursor(Qt.PointingHandCursor)
             btn.setFont(button_font)
             btn.setStyleSheet(base_style)
-        self.btn_merge.setFixedSize(64, 34)
-        self.btn_merge.setCursor(Qt.PointingHandCursor)
-        self.btn_merge.setFont(button_font)
-        self.btn_merge.setStyleSheet(base_style)
         self.btn_play_pause.setFixedSize(58, 42)
+        self.btn_play_pause.setIconSize(QSize(22, 22))
         self.btn_play_pause.setCursor(Qt.PointingHandCursor)
         self.btn_play_pause.setFont(button_font)
         self.btn_play_pause.setStyleSheet(
@@ -376,9 +394,10 @@ class BottomTransportBar(QWidget):
 
         # Зум
         self.btn_zoom_reset = QToolButton()
-        self.btn_zoom_reset.setText('Reset')
+        self.btn_zoom_reset.setIcon(icon('zoom_reset'))
+        self.btn_zoom_reset.setIconSize(QSize(18, 18))
         self.btn_zoom_reset.setToolTip('Reset zoom (0)')
-        self.btn_zoom_reset.setFixedSize(58, 34)
+        self.btn_zoom_reset.setFixedSize(44, 34)
         self.btn_zoom_reset.setCursor(Qt.PointingHandCursor)
         self.btn_zoom_reset.setFont(button_font)
         self.btn_zoom_reset.setStyleSheet(base_style)
@@ -399,12 +418,9 @@ class BottomTransportBar(QWidget):
         zoom_layout.setSpacing(8)
         zoom_layout.addWidget(self.btn_zoom_reset)
         zoom_layout.addWidget(self.zoom_slider)
-        zoom_wrap.setFixedWidth(330)
+        zoom_wrap.setFixedWidth(316)
 
-        left_placeholder = QWidget()
-        left_placeholder.setFixedWidth(330)
-
-        layout.addWidget(left_placeholder)
+        # Убрал пустой left_placeholder. Используем stretch для центровки.
         layout.addStretch(1)
         layout.addWidget(controls_wrap, 0, Qt.AlignCenter)
         layout.addStretch(1)
@@ -414,4 +430,4 @@ class BottomTransportBar(QWidget):
         return None
 
     def update_play_button(self, playing: bool) -> None:
-        self.btn_play_pause.setText('❚❚' if playing else '▶')
+        self.btn_play_pause.setIcon(self._icon_pause if playing else self._icon_play)

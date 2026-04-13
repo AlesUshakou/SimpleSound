@@ -793,15 +793,11 @@ class TimelineCanvas(QWidget):
             menu.addAction('Delete Segment', self.delete_selected)
         merge_candidates = self._mergeable_selected_segments()
         if len(merge_candidates) > 1:
-            menu.addAction('Merge Selected Segments', self.merge_selected_segments)
+            menu.addAction('Close gaps (M)', self.merge_selected_segments)
         menu.exec(global_pos)
 
     def _mergeable_selected_segments(self) -> List[Tuple[int, int]]:
-        """Возвращает выделенные сегменты одного трека, пригодные для слияния.
-        Допускаются любые 2+ сегмента одного трека — разрывы на таймлайне
-        при слиянии просто закрываются (результирующий сегмент покрывает
-        диапазон от min(start) до max(end)).
-        """
+        """Выделенные сегменты одного трека (2+), отсортированные по start."""
         selected = list(dict.fromkeys(self.project.selected_segments))
         if len(selected) < 2:
             return []
@@ -820,43 +816,69 @@ class TimelineCanvas(QWidget):
         return ordered
 
     def merge_selected_segments(self) -> None:
+        """Приклеивает правые выделенные сегменты вплотную к левому.
+
+        Сегменты остаются отдельными — не объединяются в один.
+        Каждый следующий по времени выделенный сегмент сдвигается так,
+        чтобы его start совпал с end предыдущего (zero-gap).
+        """
         selected = self._mergeable_selected_segments()
         if len(selected) < 2:
-            self.status_changed.emit('Select 2+ segments on the same track to merge')
+            self.status_changed.emit('Select 2+ segments on the same track to close gaps')
             return
         track_idx = selected[0][0]
         track = self.project.tracks[track_idx]
-        segments = [track.segments[seg_idx] for _, seg_idx in selected]
-        merged = TrackSegment(
-            min(seg.start for seg in segments),
-            max(seg.end for seg in segments),
-            segments[0].source_start,
-        )
-        # Проверяем, что результирующий сегмент не перекрывает невыделенные сегменты
         selected_indexes = {seg_idx for _, seg_idx in selected}
-        for i, other in enumerate(track.segments):
-            if i in selected_indexes:
-                continue
-            if merged.start < other.end - 0.001 and merged.end > other.start + 0.001:
-                self.status_changed.emit('Merge blocked: overlaps another segment in between')
+
+        # Сохраняем невыделенные сегменты как "препятствия"
+        obstacles = [seg for i, seg in enumerate(track.segments) if i not in selected_indexes]
+
+        # Формируем список будущих сдвинутых сегментов
+        ordered_selected = [track.segments[seg_idx] for _, seg_idx in selected]
+        # Левый остаётся на месте — к нему приклеиваются остальные
+        new_positions: List[TrackSegment] = [
+            TrackSegment(ordered_selected[0].start, ordered_selected[0].end, ordered_selected[0].source_start)
+        ]
+        cursor = new_positions[0].end
+        for seg in ordered_selected[1:]:
+            new_seg = TrackSegment(cursor, cursor + seg.duration, seg.source_start)
+            new_positions.append(new_seg)
+            cursor = new_seg.end
+
+        # Проверка: ни один из перемещённых сегментов не пересекает препятствие
+        for moved in new_positions:
+            for other in obstacles:
+                if moved.start < other.end - 0.001 and moved.end > other.start + 0.001:
+                    self.status_changed.emit('Merge blocked: overlaps another segment in between')
+                    return
+            if moved.start < 0.0:
+                self.status_changed.emit('Merge blocked: negative position')
                 return
+
         self._begin_mutation()
-        track.segments = [seg for i, seg in enumerate(track.segments) if i not in selected_indexes]
-        track.segments.append(merged)
-        track.segments.sort(key=lambda seg: seg.start)
+        # Заменяем выделенные сегменты их новыми позициями
+        track.segments = obstacles + new_positions
+        track.segments.sort(key=lambda s: s.start)
         track.ensure_full_segment()
-        merged_index = next(
-            (i for i, seg in enumerate(track.segments)
-             if math.isclose(seg.start, merged.start, abs_tol=1e-4)
-             and math.isclose(seg.end, merged.end, abs_tol=1e-4)
-             and math.isclose(seg.source_start, merged.source_start, abs_tol=1e-4)),
-            None,
-        )
+
+        # Восстанавливаем индексы выделения по новым позициям
+        new_selected: List[Tuple[int, int]] = []
+        for moved in new_positions:
+            idx = next(
+                (i for i, seg in enumerate(track.segments)
+                 if math.isclose(seg.start, moved.start, abs_tol=1e-4)
+                 and math.isclose(seg.end, moved.end, abs_tol=1e-4)
+                 and math.isclose(seg.source_start, moved.source_start, abs_tol=1e-4)),
+                None,
+            )
+            if idx is not None:
+                new_selected.append((track_idx, idx))
+
         self.project.selected_track = track_idx
-        self.project.selected_segment = (track_idx, merged_index) if merged_index is not None else None
-        self.project.selected_segments = [self.project.selected_segment] if self.project.selected_segment else []
+        self.project.selected_segments = new_selected
+        self.project.selected_segment = new_selected[-1] if new_selected else None
         self.project_changed.emit()
-        self.status_changed.emit(f'Merged {len(selected)} segments')
+        self.status_changed.emit(f'Closed gaps between {len(selected)} segments')
         self.update()
 
     def delete_automation_point(self, point_ref: Optional[Tuple[int, int]] = None) -> None:
