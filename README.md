@@ -24,7 +24,9 @@ A lightweight multitrack audio editor built with Python and PySide6. Load severa
 
 ## Screenshots
 
-*(Add screenshots to `docs/` and link them here.)*
+<p align="center">
+  <img src="./assets/Screenshot.png" alt="SimpleSound screenshot">
+</p>
 
 ---
 
