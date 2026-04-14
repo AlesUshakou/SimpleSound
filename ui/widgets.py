@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen
+from PySide6.QtCore import QByteArray, QPointF, QRectF, QSize, Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -21,15 +22,73 @@ from core.models import ProjectModel, TrackModel
 from core.theme import Theme
 
 
+# ---------- SVG icon helpers ----------
+
+# Все SVG — с параметром {c} для цвета штриха/заливки, чтобы можно было перекрашивать.
+SVG_PLAY = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<path d="M7 5.5 L7 18.5 L18.5 12 Z" fill="{c}"/></svg>'''
+
+SVG_PAUSE = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<rect x="6.5" y="5.5" width="4" height="13" rx="1" fill="{c}"/>
+<rect x="13.5" y="5.5" width="4" height="13" rx="1" fill="{c}"/></svg>'''
+
+SVG_JUMP_START = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<rect x="4" y="5" width="2.2" height="14" rx="0.8" fill="{c}"/>
+<path d="M20 5 L20 19 L8.5 12 Z" fill="{c}"/></svg>'''
+
+SVG_JUMP_END = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<rect x="17.8" y="5" width="2.2" height="14" rx="0.8" fill="{c}"/>
+<path d="M4 5 L4 19 L15.5 12 Z" fill="{c}"/></svg>'''
+
+SVG_CUT = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="{c}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+<circle cx="6.5" cy="17" r="2.8"/>
+<circle cx="6.5" cy="7" r="2.8"/>
+<line x1="20" y1="4" x2="8.5" y2="15.5"/>
+<line x1="20" y1="20" x2="8.5" y2="8.5"/>
+<line x1="14.5" y1="14.5" x2="20" y2="20" stroke-width="1.4"/></svg>'''
+
+SVG_MERGE = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="{c}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+<path d="M4 7 L10 7 L12 12 L10 17 L4 17"/>
+<path d="M20 7 L14 7 L12 12 L14 17 L20 17"/></svg>'''
+
+# Замок: закрытый (locked)
+SVG_LOCK_CLOSED = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="{c}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+<rect x="5" y="10.5" width="14" height="9.5" rx="2"/>
+<path d="M8 10.5 V7.5 a4 4 0 0 1 8 0 V10.5"/>
+<circle cx="12" cy="15" r="1.2" fill="{c}" stroke="none"/></svg>'''
+
+# Замок: открытый (unlocked) — дужка откинута вбок
+SVG_LOCK_OPEN = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="{c}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+<rect x="5" y="10.5" width="14" height="9.5" rx="2"/>
+<path d="M8 10.5 V7.5 a4 4 0 0 1 7.5 -1.8"/>
+<circle cx="12" cy="15" r="1.2" fill="{c}" stroke="none"/></svg>'''
+
+# Прыжок к ближайшему пику слева: волна + стрелка влево + метка пика
+SVG_PEAK_PREV = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="{c}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+<path d="M20 17 L17 17 L15.5 9 L14 15 L12.5 11 L11 17 L8.5 17"/>
+<path d="M7.5 12 L4 12 M4 12 L6 10 M4 12 L6 14"/></svg>'''
+
+# Прыжок к ближайшему пику справа
+SVG_PEAK_NEXT = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="{c}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+<path d="M4 17 L7 17 L8.5 9 L10 15 L11.5 11 L13 17 L15.5 17"/>
+<path d="M16.5 12 L20 12 M20 12 L18 10 M20 12 L18 14"/></svg>'''
+
+
+def make_svg_icon(svg_template: str, color: str, size: int = 22) -> QIcon:
+    svg = svg_template.replace('{c}', color)
+    renderer = QSvgRenderer(QByteArray(svg.encode('utf-8')))
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    p = QPainter(pixmap)
+    try:
+        p.setRenderHint(QPainter.Antialiasing)
+        renderer.render(p)
+    finally:
+        p.end()
+    return QIcon(pixmap)
+
+
 # ---------- helpers ----------
-
-_ICONS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'icons')
-
-
-def icon(name: str) -> QIcon:
-    path = os.path.join(_ICONS_DIR, f'{name}.svg')
-    return QIcon(path) if os.path.exists(path) else QIcon()
-
 
 def db_to_meter_ratio(db: float) -> float:
     db = max(-60.0, min(6.0, float(db)))
@@ -137,11 +196,14 @@ class TrackHeaderRow(QFrame):
     mute_requested = Signal(int)
     reset_automation_requested = Signal(int)
     select_requested = Signal(int)
+    lock_toggled = Signal(bool)  # глобальный тумблер — шлём новое состояние
 
-    def __init__(self, track_index: int, track: TrackModel, row_height: int = 128, parent: Optional[QWidget] = None):
+    def __init__(self, track_index: int, track: TrackModel, row_height: int = 128,
+                 segments_locked: bool = True, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.track_index = track_index
         self.track = track
+        self.segments_locked = segments_locked
         self.setObjectName('TrackHeaderRow')
         self.setFixedHeight(row_height)
         self.setMinimumWidth(250)
@@ -160,28 +222,28 @@ class TrackHeaderRow(QFrame):
         top.addWidget(self.num_label)
         top.addWidget(self.name_label, 1)
 
-        self.btn_solo = QPushButton()
-        self.btn_mute = QPushButton()
-        self.btn_reset = QPushButton()
-        self.btn_delete = QPushButton()
-        self.btn_solo.setIcon(icon('solo'))
-        self.btn_mute.setIcon(icon('mute'))
-        self.btn_reset.setIcon(icon('automation'))
-        self.btn_delete.setIcon(icon('delete'))
-        for btn in (self.btn_solo, self.btn_mute, self.btn_reset, self.btn_delete):
-            btn.setIconSize(QSize(16, 16))
+        self.btn_solo = QPushButton('S')
+        self.btn_mute = QPushButton('M')
+        self.btn_reset = QPushButton('A')
+        self.btn_lock = QPushButton()
+        self.btn_lock.setCheckable(True)
+        self.btn_lock.setChecked(segments_locked)
+        self.btn_delete = QPushButton('✕')
         self.btn_solo.setToolTip('Solo track')
         self.btn_mute.setToolTip('Mute track')
         self.btn_reset.setToolTip('Reset automation')
+        self._refresh_lock_visuals()
         self.btn_delete.setToolTip('Delete track')
-        for btn in (self.btn_solo, self.btn_mute, self.btn_reset, self.btn_delete):
+        for btn in (self.btn_solo, self.btn_mute, self.btn_reset, self.btn_lock, self.btn_delete):
             btn.setFixedSize(30, 30)
             btn.setCursor(Qt.PointingHandCursor)
         self.btn_solo.clicked.connect(lambda: self.solo_requested.emit(self.track_index))
         self.btn_mute.clicked.connect(lambda: self.mute_requested.emit(self.track_index))
         self.btn_reset.clicked.connect(lambda: self.reset_automation_requested.emit(self.track_index))
+        self.btn_lock.clicked.connect(self._on_lock_clicked)
         self.btn_delete.clicked.connect(lambda: self.remove_requested.emit(self.track_index))
-        for btn in (self.btn_solo, self.btn_mute, self.btn_reset, self.btn_delete):
+        # Порядок: S, M, A, Lock, ✕
+        for btn in (self.btn_solo, self.btn_mute, self.btn_reset, self.btn_lock, self.btn_delete):
             top.addWidget(btn)
         layout.addLayout(top)
 
@@ -193,10 +255,41 @@ class TrackHeaderRow(QFrame):
         layout.addWidget(self.meter)
         self.refresh()
 
+    def set_segments_locked(self, locked: bool) -> None:
+        self.segments_locked = bool(locked)
+        self.btn_lock.blockSignals(True)
+        self.btn_lock.setChecked(self.segments_locked)
+        self.btn_lock.blockSignals(False)
+        self._refresh_lock_visuals()
+
+    def _on_lock_clicked(self) -> None:
+        self.segments_locked = self.btn_lock.isChecked()
+        self._refresh_lock_visuals()
+        self.lock_toggled.emit(self.segments_locked)
+
+    def _refresh_lock_visuals(self) -> None:
+        if self.segments_locked:
+            self.btn_lock.setIcon(make_svg_icon(SVG_LOCK_CLOSED, '#FF8A3D', 18))
+            self.btn_lock.setToolTip(
+                'Segments locked — click to unlock.\n'
+                'Shortcut: L\n'
+                'Locked: segments cannot be moved, trimmed or dragged.\n'
+                'Unlocked: drag segment body to move, drag edges to trim.'
+            )
+        else:
+            self.btn_lock.setIcon(make_svg_icon(SVG_LOCK_OPEN, '#EAECEF', 18))
+            self.btn_lock.setToolTip(
+                'Segments unlocked — click to lock.\n'
+                'Shortcut: L\n'
+                'Unlocked: drag segment body to move, drag edges to trim.'
+            )
+        self.btn_lock.setIconSize(QSize(18, 18))
+
     def refresh(self) -> None:
         self.btn_solo.setStyleSheet(self._button_style(self.track.solo, '#FF8A3D'))
         self.btn_mute.setStyleSheet(self._button_style(self.track.mute, '#8894A7'))
         self.btn_reset.setStyleSheet(self._button_style(False, '#8894A7'))
+        self.btn_lock.setStyleSheet(self._button_style(self.segments_locked, '#FF8A3D'))
         self.btn_delete.setStyleSheet(self._button_style(False, '#E05F5F'))
         self.meter.set_levels(
             self.track.meter_l, self.track.meter_r,
@@ -232,17 +325,21 @@ class TrackHeaderPanel(QWidget):
     mute_requested = Signal(int)
     reset_automation_requested = Signal(int)
     select_requested = Signal(int)
+    lock_toggled = Signal(bool)
 
     def __init__(self, project: ProjectModel, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.project = project
         self.row_height = 128
+        self.segments_locked = True
         self.setFixedWidth(250)
         self.layout_main = QVBoxLayout(self)
         self.layout_main.setContentsMargins(0, 0, 0, 0)
         self.layout_main.setSpacing(0)
-        # Spacer соответствует высоте линейки канваса (RULER_HEIGHT = 38)
-        self.layout_main.addSpacing(38)
+        # Spacer — только если есть треки (линейка таймлайна появляется только с ними)
+        self.ruler_spacer = QWidget()
+        self.ruler_spacer.setFixedHeight(38)
+        self.layout_main.addWidget(self.ruler_spacer)
         self.empty_label = QLabel('No tracks loaded')
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setStyleSheet('color:#7F8A98;font-size:13px;font-weight:600;padding:24px 12px;')
@@ -255,6 +352,11 @@ class TrackHeaderPanel(QWidget):
         self.layout_main.addStretch(1)
         self.rows: List[TrackHeaderRow] = []
 
+    def set_segments_locked(self, locked: bool) -> None:
+        self.segments_locked = bool(locked)
+        for row in self.rows:
+            row.set_segments_locked(self.segments_locked)
+
     def set_row_height(self, value: int) -> None:
         self.row_height = value
         for row in self.rows:
@@ -265,6 +367,8 @@ class TrackHeaderPanel(QWidget):
         total_height = 0 if not self.rows else len(self.rows) * self.row_height + max(0, len(self.rows) - 1)
         self.rows_container.setFixedHeight(total_height)
         self.empty_label.setVisible(not self.rows)
+        # Когда треков нет — линейки на канвасе тоже нет, убираем spacer
+        self.ruler_spacer.setVisible(bool(self.rows))
 
     def rebuild(self) -> None:
         while self.rows_layout.count():
@@ -274,12 +378,13 @@ class TrackHeaderPanel(QWidget):
                 widget.deleteLater()
         self.rows.clear()
         for i, track in enumerate(self.project.tracks):
-            row = TrackHeaderRow(i, track, self.row_height)
+            row = TrackHeaderRow(i, track, self.row_height, self.segments_locked)
             row.remove_requested.connect(self.remove_requested)
             row.solo_requested.connect(self.solo_requested)
             row.mute_requested.connect(self.mute_requested)
             row.reset_automation_requested.connect(self.reset_automation_requested)
             row.select_requested.connect(self.select_requested)
+            row.lock_toggled.connect(self.lock_toggled)
             row.setStyleSheet(self._row_style(self.project.selected_track == i, track.solo))
             self.rows_layout.addWidget(row)
             self.rows.append(row)
@@ -296,6 +401,7 @@ class TrackHeaderPanel(QWidget):
             row.num_label.setText(str(track.track_id))
             row.name_label.setText(track.name)
             row.file_label.setText(os.path.basename(track.file_path) if track.file_path else 'Empty Track')
+            row.set_segments_locked(self.segments_locked)
             row.setStyleSheet(self._row_style(self.project.selected_track == i, track.solo))
             row.refresh()
 
@@ -320,114 +426,252 @@ class BottomTransportBar(QWidget):
     merge_requested = Signal()
     zoom_changed = Signal(int)
     zoom_reset_requested = Signal()
+    peak_prev_requested = Signal()
+    peak_next_requested = Signal()
+
+    # Стили: капсулы с лёгким свечением на ховер
+    CAPSULE_STYLE = (
+        'QToolButton {'
+        '  background: qlineargradient(x1:0,y1:0,x2:0,y2:1,'
+        '                              stop:0 #2A313C, stop:1 #20252E);'
+        '  border: 1px solid #363E4C;'
+        '  border-radius: 10px;'
+        '  color: #EAECEF;'
+        '}'
+        'QToolButton:hover {'
+        '  background: qlineargradient(x1:0,y1:0,x2:0,y2:1,'
+        '                              stop:0 #333B47, stop:1 #262C36);'
+        '  border: 1px solid #FF8A3D;'
+        '}'
+        'QToolButton:pressed {'
+        '  background: #1A1E26;'
+        '}'
+    )
+
+    PLAY_STYLE = (
+        'QToolButton {'
+        '  background: qradialgradient(cx:0.5, cy:0.5, radius:0.8,'
+        '                              stop:0 #FFA363, stop:1 #FF7A2F);'
+        '  border: 1px solid #FFB27C;'
+        '  border-radius: 10px;'
+        '  color: #14181F;'
+        '}'
+        'QToolButton:hover {'
+        '  background: qradialgradient(cx:0.5, cy:0.5, radius:0.8,'
+        '                              stop:0 #FFB57D, stop:1 #FF8A3D);'
+        '  border: 1px solid #FFC79A;'
+        '}'
+        'QToolButton:pressed {'
+        '  background: #E56A22;'
+        '}'
+    )
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setObjectName('BottomBar')
         self.setFixedHeight(72)
-        self.setStyleSheet('background:#20242C;border-top:1px solid #303643;')
+        self.setStyleSheet(
+            'QWidget#BottomBar {'
+            '  background: qlineargradient(x1:0,y1:0,x2:0,y2:1,'
+            '                              stop:0 #22262F, stop:1 #1C2028);'
+            '  border-top: 1px solid #303643;'
+            '}'
+        )
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(14)
 
-        controls_wrap = QWidget()
-        controls = QHBoxLayout(controls_wrap)
-        controls.setContentsMargins(0, 0, 0, 0)
-        controls.setSpacing(10)
+        # === Transport: Jump | PeakPrev | Play | PeakNext | Jump ===
+        transport_wrap = self._make_capsule_group()
+        transport_layout = transport_wrap.layout()
+        transport_layout.setSpacing(2)
 
-        self.btn_jump_start = QToolButton()
-        self.btn_jump_start.setIcon(icon('jump_start'))
-        self.btn_jump_start.setToolTip('Jump to start (Home)')
-
+        self.btn_jump_start = self._make_icon_button(
+            SVG_JUMP_START,
+            'Jump to start (Home)',
+        )
+        self.btn_peak_prev = self._make_icon_button(
+            SVG_PEAK_PREV,
+            'Jump to previous peak (Ctrl+Shift+Space)\n'
+            'Moves playhead to the nearest louder peak to the LEFT.\n'
+            'Useful for stepping between loud transients.',
+        )
         self.btn_play_pause = QToolButton()
         self.btn_play_pause.setObjectName('PlayButton')
-        self._icon_play = icon('play')
-        self._icon_pause = icon('pause')
-        self.btn_play_pause.setIcon(self._icon_play)
         self.btn_play_pause.setToolTip('Play / Pause (Space)')
-
-        self.btn_jump_end = QToolButton()
-        self.btn_jump_end.setIcon(icon('jump_end'))
-        self.btn_jump_end.setToolTip('Jump to end (End)')
-
-        self.btn_cut = QToolButton()
-        self.btn_cut.setIcon(icon('cut'))
-        self.btn_cut.setToolTip('Cut at playhead (C)')
-
-        self.btn_merge = QToolButton()
-        self.btn_merge.setIcon(icon('merge'))
-        self.btn_merge.setToolTip('Merge selected segments (M)')
-
-        button_font = QFont('Segoe UI', 10)
-        base_style = (
-            'QToolButton{background:#262B35;border:1px solid #343B48;border-radius:8px;'
-            'color:#EAECEF;font-weight:700;}'
-            'QToolButton:hover{background:#2F3642;border:1px solid #4A5260;}'
-        )
-        for btn in (self.btn_jump_start, self.btn_jump_end, self.btn_cut, self.btn_merge):
-            btn.setFixedSize(44, 34)
-            btn.setIconSize(QSize(18, 18))
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setFont(button_font)
-            btn.setStyleSheet(base_style)
-        self.btn_play_pause.setFixedSize(58, 42)
-        self.btn_play_pause.setIconSize(QSize(22, 22))
+        self.btn_play_pause.setFixedSize(44, 34)
         self.btn_play_pause.setCursor(Qt.PointingHandCursor)
-        self.btn_play_pause.setFont(button_font)
-        self.btn_play_pause.setStyleSheet(
-            'QToolButton{background:#FF8A3D;border:1px solid #FF9D59;border-radius:10px;'
-            'color:#14181F;font-weight:800;}'
-            'QToolButton:hover{background:#FF9A54;border:1px solid #FFB27C;}'
+        self.btn_play_pause.setStyleSheet(self.PLAY_STYLE)
+        self.btn_play_pause.setIcon(make_svg_icon(SVG_PLAY, '#14181F', 20))
+        self.btn_play_pause.setIconSize(QSize(20, 20))
+        self.btn_peak_next = self._make_icon_button(
+            SVG_PEAK_NEXT,
+            'Jump to next peak (Shift+Space)\n'
+            'Moves playhead to the nearest louder peak to the RIGHT.\n'
+            'Useful for stepping between loud transients.',
+        )
+        self.btn_jump_end = self._make_icon_button(
+            SVG_JUMP_END,
+            'Jump to end (End)',
         )
 
+        transport_layout.addWidget(self.btn_jump_start)
+        transport_layout.addWidget(self.btn_peak_prev)
+        transport_layout.addWidget(self.btn_play_pause)
+        transport_layout.addWidget(self.btn_peak_next)
+        transport_layout.addWidget(self.btn_jump_end)
+
+        # === Edit: Cut | Merge ===
+        edit_wrap = self._make_capsule_group()
+        edit_layout = edit_wrap.layout()
+        edit_layout.setSpacing(2)
+        self.btn_cut = self._make_icon_button(SVG_CUT, 'Cut at playhead (C)')
+        self.btn_merge = self._make_icon_button(SVG_MERGE, 'Merge selected segments (M)')
+        edit_layout.addWidget(self.btn_cut)
+        edit_layout.addWidget(self.btn_merge)
+
+        # === Zoom: Reset + Slider ===
+        zoom_wrap = self._make_capsule_group()
+        zoom_layout = zoom_wrap.layout()
+        zoom_layout.setContentsMargins(10, 6, 10, 6)
+        zoom_layout.setSpacing(10)
+
+        zoom_icon = QLabel('−')
+        zoom_icon.setFixedWidth(14)
+        zoom_icon.setAlignment(Qt.AlignCenter)
+        zoom_icon.setStyleSheet('color:#8894A7;font-size:16px;font-weight:700;background:transparent;border:none;')
+
+        self.zoom_slider = QSlider(Qt.Horizontal)
+        self.zoom_slider.setRange(0, 360)
+        self.zoom_slider.setValue(0)
+        self.zoom_slider.setFixedWidth(220)
+        self.zoom_slider.setCursor(Qt.PointingHandCursor)
+        self.zoom_slider.setStyleSheet(
+            'QSlider { background: transparent; border: none; }'
+            'QSlider::groove:horizontal {'
+            '  height: 4px;'
+            '  background: #14171E;'
+            '  border-radius: 2px;'
+            '}'
+            'QSlider::sub-page:horizontal {'
+            '  background: qlineargradient(x1:0,y1:0,x2:1,y2:0,'
+            '                              stop:0 #FF7A2F, stop:1 #FFB27C);'
+            '  border-radius: 2px;'
+            '}'
+            'QSlider::handle:horizontal {'
+            '  width: 14px; height: 14px;'
+            '  margin: -6px 0;'
+            '  background: qradialgradient(cx:0.5, cy:0.5, radius:0.8,'
+            '                              stop:0 #FFE1C7, stop:0.6 #FF8A3D, stop:1 #E56A22);'
+            '  border: 1px solid #2A1A0F;'
+            '  border-radius: 7px;'
+            '}'
+            'QSlider::handle:horizontal:hover {'
+            '  background: qradialgradient(cx:0.5, cy:0.5, radius:0.8,'
+            '                              stop:0 #FFF0DC, stop:0.6 #FFA363, stop:1 #FF7A2F);'
+            '}'
+        )
+
+        zoom_plus = QLabel('+')
+        zoom_plus.setFixedWidth(14)
+        zoom_plus.setAlignment(Qt.AlignCenter)
+        zoom_plus.setStyleSheet('color:#8894A7;font-size:16px;font-weight:700;background:transparent;border:none;')
+
+        self.btn_zoom_reset = QToolButton()
+        self.btn_zoom_reset.setText('1:1')
+        self.btn_zoom_reset.setToolTip('Reset zoom (0)')
+        self.btn_zoom_reset.setFixedSize(40, 28)
+        self.btn_zoom_reset.setCursor(Qt.PointingHandCursor)
+        f = QFont('Segoe UI', 9)
+        f.setBold(True)
+        self.btn_zoom_reset.setFont(f)
+        self.btn_zoom_reset.setStyleSheet(
+            'QToolButton {'
+            '  background: transparent;'
+            '  border: 1px solid #3C4452;'
+            '  border-radius: 6px;'
+            '  color: #9BA6B2;'
+            '}'
+            'QToolButton:hover {'
+            '  color: #FF8A3D;'
+            '  border: 1px solid #FF8A3D;'
+            '}'
+        )
+
+        zoom_layout.addWidget(zoom_icon)
+        zoom_layout.addWidget(self.zoom_slider)
+        zoom_layout.addWidget(zoom_plus)
+        zoom_layout.addWidget(self.btn_zoom_reset)
+
+        # --- Connects ---
         self.btn_jump_start.clicked.connect(lambda: self.jump_start_requested.emit())
         self.btn_play_pause.clicked.connect(lambda: self.play_pause_requested.emit())
         self.btn_jump_end.clicked.connect(lambda: self.jump_end_requested.emit())
         self.btn_cut.clicked.connect(lambda: self.cut_requested.emit())
         self.btn_merge.clicked.connect(lambda: self.merge_requested.emit())
-
-        controls.addWidget(self.btn_jump_start)
-        controls.addWidget(self.btn_play_pause)
-        controls.addWidget(self.btn_cut)
-        controls.addWidget(self.btn_merge)
-        controls.addWidget(self.btn_jump_end)
-
-        # Зум
-        self.btn_zoom_reset = QToolButton()
-        self.btn_zoom_reset.setIcon(icon('zoom_reset'))
-        self.btn_zoom_reset.setIconSize(QSize(18, 18))
-        self.btn_zoom_reset.setToolTip('Reset zoom (0)')
-        self.btn_zoom_reset.setFixedSize(44, 34)
-        self.btn_zoom_reset.setCursor(Qt.PointingHandCursor)
-        self.btn_zoom_reset.setFont(button_font)
-        self.btn_zoom_reset.setStyleSheet(base_style)
-        self.zoom_slider = QSlider(Qt.Horizontal)
-        self.zoom_slider.setRange(0, 360)
-        self.zoom_slider.setValue(0)
-        self.zoom_slider.setFixedWidth(250)
-        self.zoom_slider.setStyleSheet(
-            'QSlider::groove:horizontal { height: 6px; background: #2D3340; border-radius: 3px; }'
-            'QSlider::handle:horizontal { width: 14px; margin: -4px 0; background: #FF8A3D; border-radius: 7px; }'
-        )
         self.btn_zoom_reset.clicked.connect(lambda: self.zoom_reset_requested.emit())
         self.zoom_slider.valueChanged.connect(lambda value: self.zoom_changed.emit(value))
+        self.btn_peak_prev.clicked.connect(lambda: self.peak_prev_requested.emit())
+        self.btn_peak_next.clicked.connect(lambda: self.peak_next_requested.emit())
 
-        zoom_wrap = QWidget()
-        zoom_layout = QHBoxLayout(zoom_wrap)
-        zoom_layout.setContentsMargins(0, 0, 0, 0)
-        zoom_layout.setSpacing(8)
-        zoom_layout.addWidget(self.btn_zoom_reset)
-        zoom_layout.addWidget(self.zoom_slider)
-        zoom_wrap.setFixedWidth(316)
+        # --- Таймер в центре нижней панели ---
+        self.time_label = QLabel('00:00.000')
+        self.time_label.setAlignment(Qt.AlignCenter)
+        self.time_label.setStyleSheet(
+            'QLabel {'
+            '  background: #181B22;'
+            '  border: 1px solid #2A303B;'
+            '  border-radius: 14px;'
+            '  padding: 8px 24px;'
+            '  color: #EAECEF;'
+            '  font-family: "Segoe UI", "Consolas", monospace;'
+            '  font-size: 18px;'
+            '  font-weight: 800;'
+            '  letter-spacing: 1px;'
+            '}'
+        )
+        self.time_label.setToolTip('Playhead position')
 
-        # Убрал пустой left_placeholder. Используем stretch для центровки.
+        # --- Layout: [transport | edit]  ...stretch...  [TIMER]  ...stretch...  [zoom] ---
+        layout.addWidget(transport_wrap, 0, Qt.AlignVCenter)
+        layout.addWidget(edit_wrap, 0, Qt.AlignVCenter)
         layout.addStretch(1)
-        layout.addWidget(controls_wrap, 0, Qt.AlignCenter)
+        layout.addWidget(self.time_label, 0, Qt.AlignCenter)
         layout.addStretch(1)
         layout.addWidget(zoom_wrap, 0, Qt.AlignRight | Qt.AlignVCenter)
 
+    def _make_capsule_group(self) -> QWidget:
+        """Контейнер-капсула: тёмный фон + скруглённая рамка для группы кнопок."""
+        wrap = QWidget()
+        wrap.setStyleSheet(
+            'QWidget {'
+            '  background: #181B22;'
+            '  border: 1px solid #2A303B;'
+            '  border-radius: 14px;'
+            '}'
+        )
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(4)
+        return wrap
+
+    def _make_icon_button(self, svg: str, tooltip: str) -> QToolButton:
+        btn = QToolButton()
+        btn.setFixedSize(38, 34)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setStyleSheet(self.CAPSULE_STYLE)
+        btn.setToolTip(tooltip)
+        btn.setIcon(make_svg_icon(svg, '#D8DDE6', 20))
+        btn.setIconSize(QSize(20, 20))
+        return btn
+
     def update_time(self, seconds: float) -> None:
-        return None
+        seconds = max(0.0, float(seconds))
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        millis = int((seconds - int(seconds)) * 1000)
+        self.time_label.setText(f'{mins:02d}:{secs:02d}.{millis:03d}')
 
     def update_play_button(self, playing: bool) -> None:
-        self.btn_play_pause.setIcon(self._icon_pause if playing else self._icon_play)
+        icon_svg = SVG_PAUSE if playing else SVG_PLAY
+        self.btn_play_pause.setIcon(make_svg_icon(icon_svg, '#14181F', 20))

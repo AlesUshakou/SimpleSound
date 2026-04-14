@@ -26,6 +26,8 @@ _ICON_PATH = os.path.join(
 SHORTCUTS: List[Tuple[str, List[Tuple[str, str]]]] = [
     ('Transport', [
         ('Space', 'Play / Pause'),
+        ('Shift + Space', 'Jump to next peak (right of playhead)'),
+        ('Ctrl + Shift + Space', 'Jump to previous peak (left of playhead)'),
         ('Home', 'Jump to start'),
         ('End', 'Jump to end'),
         ('1 – 9', 'Solo track by number (press again to un-solo)'),
@@ -33,6 +35,7 @@ SHORTCUTS: List[Tuple[str, List[Tuple[str, str]]]] = [
     ('Editing', [
         ('C', 'Cut at playhead on the selected track'),
         ('M', 'Close gaps between selected segments'),
+        ('L', 'Toggle segment lock on all tracks'),
         ('Delete', 'Delete selection / selected segment / automation point'),
         ('Ctrl + C', 'Copy selection or selected segment'),
         ('Ctrl + V', 'Paste at playhead'),
@@ -44,6 +47,7 @@ SHORTCUTS: List[Tuple[str, List[Tuple[str, str]]]] = [
         ('Shift + Wheel', 'Horizontal scroll (timeline)'),
         ('Wheel', 'Vertical scroll (tracks)'),
         ('0', 'Reset zoom'),
+        ('F1', 'Open this Help dialog'),
     ]),
     ('Mouse', [
         ('Click on waveform', 'Move playhead'),
@@ -52,8 +56,8 @@ SHORTCUTS: List[Tuple[str, List[Tuple[str, str]]]] = [
         ('Drag automation point', 'Move automation point'),
         ('Shift + Click on segment', 'Add segment to multi-selection'),
         ('Double-click on segment', 'Select / deselect segment'),
-        ('Drag segment body', 'Move segment along timeline'),
-        ('Drag segment edge', 'Trim segment'),
+        ('Drag segment body', 'Move segment along timeline (unlocked only)'),
+        ('Drag segment edge', 'Trim segment (unlocked only)'),
         ('Right-click', 'Context menu'),
     ]),
     ('Project', [
@@ -71,12 +75,16 @@ QUICK_START_TEXT = """
   <li><b>Load audio.</b> <code>File → Open Tracks…</code> and pick WAV / MP3 / FLAC / OGG / M4A.
       Each file becomes a separate track stacked vertically.</li>
   <li><b>Play / navigate.</b> Click on the waveform to move the playhead, or press
-      <code>Space</code> to play. Home / End jump to start / end.</li>
+      <code>Space</code> to play. Home / End jump to start / end. Use
+      <code>Shift + Space</code> / <code>Ctrl + Shift + Space</code> to hop between
+      loud peaks in the waveform.</li>
   <li><b>Select &amp; cut.</b> Drag on a track to select a time range, then press
       <code>Delete</code> to remove it. Press <code>C</code> to split a segment at the playhead.</li>
-  <li><b>Rearrange.</b> Drag a segment's body to move it; drag its left/right edge to trim.
-      Hold <code>Shift</code> and click segments to multi-select, then press <code>M</code> to
-      close the gaps between them (right segments slide flush against the left one).</li>
+  <li><b>Rearrange.</b> Unlock segments first (lock icon on the track header or
+      press <code>L</code>), then drag a segment's body to move it, or drag its
+      left/right edge to trim. Hold <code>Shift</code> and click segments to
+      multi-select, then press <code>M</code> to close the gaps between them
+      (right segments slide flush against the left one).</li>
   <li><b>Automate volume.</b> <code>Ctrl + Click</code> on a track adds an automation point.
       Drag points up/down to change the gain along the timeline.</li>
   <li><b>Solo / Mute.</b> Click <b>S</b> or <b>M</b> on the track header. Numbers
@@ -84,6 +92,20 @@ QUICK_START_TEXT = """
   <li><b>Save.</b> <code>Ctrl + S</code> saves the project as <code>.ssproj</code>
       (references source audio files by path).</li>
 </ol>
+
+<h3 style='color:#FF8A3D;margin-top:18px;'>Segment lock</h3>
+<p>The <b>lock icon</b> on each track header (and the global <code>L</code> shortcut)
+toggles whether segments can be moved or trimmed. <b>Locked is the default</b> —
+this prevents accidental edits while you navigate, select, and play back. Hand
+and resize cursors are hidden over segments while locked. Unlock to rearrange,
+then lock again when you're done.</p>
+
+<h3 style='color:#FF8A3D;margin-top:14px;'>Peak jump</h3>
+<p>The <b>peak-jump buttons</b> flank the Play button in the bottom bar, and
+their shortcuts <code>Shift + Space</code> (next) and
+<code>Ctrl + Shift + Space</code> (previous) snap the playhead to the nearest
+loud peak in the waveform. Useful for quickly stepping between drum hits,
+vocal onsets, or other transients without zooming in.</p>
 """
 
 
@@ -107,7 +129,11 @@ Built with Python + PySide6, using PortAudio for low-latency playback.</p>
 
 
 class HelpDialog(QDialog):
-    def __init__(self, parent=None):
+    TAB_SHORTCUTS = 'shortcuts'
+    TAB_QUICK_START = 'quick_start'
+    TAB_ABOUT = 'about'
+
+    def __init__(self, parent=None, initial_tab: str = TAB_SHORTCUTS):
         super().__init__(parent)
         self.setWindowTitle('SimpleSound — Help')
         self.setMinimumSize(640, 560)
@@ -151,10 +177,17 @@ class HelpDialog(QDialog):
         root.addLayout(header)
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_shortcuts_tab(), 'Shortcuts')
-        self.tabs.addTab(self._build_text_tab(QUICK_START_TEXT), 'Quick Start')
-        self.tabs.addTab(self._build_text_tab(ABOUT_TEXT), 'About')
+        # Индексы табов фиксируем по порядку добавления
+        self._tab_indexes = {
+            self.TAB_SHORTCUTS: self.tabs.addTab(self._build_shortcuts_tab(), 'Shortcuts'),
+            self.TAB_QUICK_START: self.tabs.addTab(self._build_text_tab(QUICK_START_TEXT), 'Quick Start'),
+            self.TAB_ABOUT: self.tabs.addTab(self._build_text_tab(ABOUT_TEXT), 'About'),
+        }
         root.addWidget(self.tabs, 1)
+
+        # Устанавливаем стартовую вкладку
+        if initial_tab in self._tab_indexes:
+            self.tabs.setCurrentIndex(self._tab_indexes[initial_tab])
 
         footer = QHBoxLayout()
         footer.addStretch(1)

@@ -50,9 +50,71 @@ class TimelineCanvas(QWidget):
         self._mutating = False
         self.waveform_cache = WaveformRenderCache()
         self.waveform_mode = 'signed'
+        self.segments_locked = True  # По умолчанию сегменты заблокированы
         self.setMouseTracking(True)
         self.setMinimumWidth(1200)
         self._update_minimum_size()
+
+    def set_segments_locked(self, locked: bool) -> None:
+        self.segments_locked = bool(locked)
+        self._update_hover_cursor()
+        self.update()
+
+    def find_nearest_peak(self, direction: int) -> Optional[float]:
+        """Находит ближайший локальный максимум waveform относительно playhead.
+        direction: +1 — вправо, -1 — влево. Возвращает время пика или None."""
+        if not self.project.tracks:
+            return None
+        current = self.project.playhead_time
+        min_gap = 0.25
+        best_time: Optional[float] = None
+        best_score = 0.0
+        for track in self.project.tracks:
+            if track.audio_data is None or track.audio_data.size == 0:
+                continue
+            import numpy as np
+            mip = track.mipmaps.get(100)
+            if isinstance(mip, dict):
+                data = np.abs(mip['max'])
+                ratio = track.sample_rate / 100.0
+            else:
+                raw = track.mipmaps.get(1)
+                if raw is None:
+                    continue
+                step = max(1, track.sample_rate // 50)
+                data = np.abs(raw[::step])
+                ratio = track.sample_rate / step
+            if data.size < 3:
+                continue
+            for seg in track.segments:
+                seg_src_start = seg.source_start
+                seg_src_end = seg.source_start + seg.duration
+                i_start = max(1, int(seg_src_start * ratio))
+                i_end = min(data.size - 1, int(seg_src_end * ratio))
+                if i_end - i_start < 3:
+                    continue
+                window = data[i_start:i_end]
+                threshold = float(np.percentile(window, 92)) if window.size > 10 else 0.2
+                threshold = max(threshold, 0.08)
+                for i in range(1, window.size - 1):
+                    v = float(window[i])
+                    if v < threshold:
+                        continue
+                    if v <= window[i - 1] or v < window[i + 1]:
+                        continue
+                    src_time = (i_start + i) / ratio
+                    tl_time = seg.start + (src_time - seg_src_start)
+                    gap = tl_time - current
+                    if direction > 0 and gap <= min_gap:
+                        continue
+                    if direction < 0 and gap >= -min_gap:
+                        continue
+                    distance = abs(gap)
+                    score = v / (1.0 + distance * 0.5)
+                    if score > best_score:
+                        best_score = score
+                        best_time = tl_time
+        return best_time
 
     # --------- Geometry ---------
 
@@ -63,9 +125,12 @@ class TimelineCanvas(QWidget):
 
     def _update_minimum_size(self) -> None:
         content_w = int(max(1000, self.LEFT_PADDING * 2 + self.project.duration() * self.px_per_second + 120))
-        content_h = self.RULER_HEIGHT + len(self.project.tracks) * self.track_height
-        min_h = self.RULER_HEIGHT + 2 if not self.project.tracks else content_h + 2
-        self.setMinimumSize(content_w, min_h)
+        if not self.project.tracks:
+            # Без треков — заполняем всю доступную высоту, ruler не показываем
+            self.setMinimumSize(content_w, 200)
+        else:
+            content_h = self.RULER_HEIGHT + len(self.project.tracks) * self.track_height
+            self.setMinimumSize(content_w, content_h + 2)
         self.resize(self.minimumSize())
 
     def time_to_x(self, sec: float) -> float:
@@ -131,11 +196,13 @@ class TimelineCanvas(QWidget):
         try:
             painter.setRenderHint(QPainter.Antialiasing)
             painter.fillRect(self.rect(), Theme.BG)
-            self._draw_ruler(painter)
+
+            # Если треков нет — показываем только сетку и подсказку, без линейки и playhead
             if not self.project.tracks:
-                self._draw_background_pattern(painter)
-                self._draw_playhead(painter)
+                self._draw_empty_state(painter)
                 return
+
+            self._draw_ruler(painter)
             for i, track in enumerate(self.project.tracks):
                 self._draw_track(painter, i, track)
             self._draw_background_pattern(painter)
@@ -143,6 +210,68 @@ class TimelineCanvas(QWidget):
             self._draw_playhead(painter)
         finally:
             painter.end()
+
+    def _draw_empty_state(self, painter: QPainter) -> None:
+        """Пустой канвас: едва заметная сетка + подсказка drag & drop по центру."""
+        rect = self.rect()
+        # Тёмный фон
+        painter.fillRect(rect, QColor('#15181E'))
+
+        # Еле видимая сетка
+        minor = 24
+        major = minor * 4
+        painter.setPen(QPen(QColor(255, 255, 255, 8), 1))
+        for x in range(0, rect.width(), minor):
+            painter.drawLine(x, 0, x, rect.height())
+        for y in range(0, rect.height(), minor):
+            painter.drawLine(0, y, rect.width(), y)
+        painter.setPen(QPen(QColor(255, 255, 255, 14), 1))
+        for x in range(0, rect.width(), major):
+            painter.drawLine(x, 0, x, rect.height())
+        for y in range(0, rect.height(), major):
+            painter.drawLine(0, y, rect.width(), y)
+
+        # Подсказка по центру
+        scroll = self._find_scroll_area()
+        if scroll is not None:
+            viewport = scroll.viewport()
+            vx = float(scroll.horizontalScrollBar().value())
+            vy = float(scroll.verticalScrollBar().value())
+            cx = vx + viewport.width() / 2.0
+            cy = vy + viewport.height() / 2.0
+        else:
+            cx = rect.width() / 2.0
+            cy = rect.height() / 2.0
+
+        # Мягкий светящийся бейдж
+        badge_w, badge_h = 420.0, 120.0
+        badge_rect = QRectF(cx - badge_w / 2.0, cy - badge_h / 2.0, badge_w, badge_h)
+        painter.setPen(QPen(QColor(255, 138, 61, 40), 1))
+        painter.setBrush(QColor(32, 36, 44, 180))
+        painter.drawRoundedRect(badge_rect, 16, 16)
+
+        # Крупный заголовок
+        painter.setPen(QColor('#EAECEF'))
+        f = painter.font()
+        f.setPixelSize(20)
+        f.setBold(True)
+        painter.setFont(f)
+        title_rect = QRectF(badge_rect.left(), badge_rect.top() + 22, badge_rect.width(), 28)
+        painter.drawText(title_rect, Qt.AlignCenter, 'Drag & drop audio files here')
+
+        # Подпись мельче
+        painter.setPen(QColor('#9BA6B2'))
+        f2 = painter.font()
+        f2.setPixelSize(12)
+        f2.setBold(False)
+        painter.setFont(f2)
+        sub_rect = QRectF(badge_rect.left(), badge_rect.top() + 56, badge_rect.width(), 20)
+        painter.drawText(sub_rect, Qt.AlignCenter, 'or use File → Open Tracks… (Ctrl+O)')
+
+        # Акцентная полоска снизу бейджа
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(255, 138, 61, 180))
+        painter.drawRoundedRect(QRectF(cx - 24, badge_rect.bottom() - 16, 48, 3), 1.5, 1.5)
 
     def _draw_background_pattern(self, painter: QPainter) -> None:
         start_y = self.RULER_HEIGHT if not self.project.tracks else self.RULER_HEIGHT + len(self.project.tracks) * self.track_height
@@ -481,7 +610,8 @@ class TimelineCanvas(QWidget):
             self.update()
             return
 
-        if segment_hit_info is not None:
+        # Если сегменты заблокированы — не регистрируем pending_segment_hit для drag
+        if segment_hit_info is not None and not self.segments_locked:
             self.pending_segment_hit = segment_hit_info
             self.dragging_playhead = False
 
@@ -498,7 +628,13 @@ class TimelineCanvas(QWidget):
             self.update()
             return
 
-        if clicked_in_selection and self.project.selection_range and self.project.selected_track == track_index:
+        # Перетаскивание существующей выделенной области тоже блокируется в locked-режиме
+        if (
+            clicked_in_selection
+            and self.project.selection_range
+            and self.project.selected_track == track_index
+            and not self.segments_locked
+        ):
             self._begin_mutation()
             self.dragging_existing_selection = True
             self.dragging_playhead = False
@@ -583,6 +719,10 @@ class TimelineCanvas(QWidget):
             if track_index is not None:
                 self.setCursor(Qt.ArrowCursor)
                 return
+        # В locked-режиме не показываем ладошку/resize-курсоры над сегментами
+        if self.segments_locked:
+            self.unsetCursor()
+            return
         hit = self._segment_hit_info(pos)
         if hit is None:
             self.unsetCursor()
@@ -715,7 +855,6 @@ class TimelineCanvas(QWidget):
     def wheelEvent(self, event: QWheelEvent) -> None:
         scroll = self._find_scroll_area()
         if event.modifiers() & Qt.ControlModifier:
-            # Ctrl+wheel — зум вокруг playhead
             delta = event.angleDelta().y() / 120.0
             time_anchor = self.project.playhead_time
             viewport_center_x = scroll.viewport().width() / 2.0 if scroll else 0.0
@@ -731,12 +870,10 @@ class TimelineCanvas(QWidget):
             return
         if scroll:
             if event.modifiers() & Qt.ShiftModifier:
-                # Shift+wheel — горизонтальная прокрутка (по таймлайну)
                 step = int(event.angleDelta().y() * -0.8)
                 bar = scroll.horizontalScrollBar()
                 bar.setValue(bar.value() + step)
             else:
-                # Обычное колесо — вертикальная прокрутка (по трекам)
                 step = int(event.angleDelta().y() * -0.8)
                 bar = scroll.verticalScrollBar()
                 bar.setValue(bar.value() + step)
@@ -793,11 +930,10 @@ class TimelineCanvas(QWidget):
             menu.addAction('Delete Segment', self.delete_selected)
         merge_candidates = self._mergeable_selected_segments()
         if len(merge_candidates) > 1:
-            menu.addAction('Close gaps (M)', self.merge_selected_segments)
+            menu.addAction('Merge Selected Segments', self.merge_selected_segments)
         menu.exec(global_pos)
 
     def _mergeable_selected_segments(self) -> List[Tuple[int, int]]:
-        """Выделенные сегменты одного трека (2+), отсортированные по start."""
         selected = list(dict.fromkeys(self.project.selected_segments))
         if len(selected) < 2:
             return []
@@ -816,69 +952,42 @@ class TimelineCanvas(QWidget):
         return ordered
 
     def merge_selected_segments(self) -> None:
-        """Приклеивает правые выделенные сегменты вплотную к левому.
-
-        Сегменты остаются отдельными — не объединяются в один.
-        Каждый следующий по времени выделенный сегмент сдвигается так,
-        чтобы его start совпал с end предыдущего (zero-gap).
-        """
         selected = self._mergeable_selected_segments()
         if len(selected) < 2:
-            self.status_changed.emit('Select 2+ segments on the same track to close gaps')
+            self.status_changed.emit('Select 2+ segments on the same track to merge')
             return
         track_idx = selected[0][0]
         track = self.project.tracks[track_idx]
+        segments = [track.segments[seg_idx] for _, seg_idx in selected]
+        merged = TrackSegment(
+            min(seg.start for seg in segments),
+            max(seg.end for seg in segments),
+            segments[0].source_start,
+        )
         selected_indexes = {seg_idx for _, seg_idx in selected}
-
-        # Сохраняем невыделенные сегменты как "препятствия"
-        obstacles = [seg for i, seg in enumerate(track.segments) if i not in selected_indexes]
-
-        # Формируем список будущих сдвинутых сегментов
-        ordered_selected = [track.segments[seg_idx] for _, seg_idx in selected]
-        # Левый остаётся на месте — к нему приклеиваются остальные
-        new_positions: List[TrackSegment] = [
-            TrackSegment(ordered_selected[0].start, ordered_selected[0].end, ordered_selected[0].source_start)
-        ]
-        cursor = new_positions[0].end
-        for seg in ordered_selected[1:]:
-            new_seg = TrackSegment(cursor, cursor + seg.duration, seg.source_start)
-            new_positions.append(new_seg)
-            cursor = new_seg.end
-
-        # Проверка: ни один из перемещённых сегментов не пересекает препятствие
-        for moved in new_positions:
-            for other in obstacles:
-                if moved.start < other.end - 0.001 and moved.end > other.start + 0.001:
-                    self.status_changed.emit('Merge blocked: overlaps another segment in between')
-                    return
-            if moved.start < 0.0:
-                self.status_changed.emit('Merge blocked: negative position')
+        for i, other in enumerate(track.segments):
+            if i in selected_indexes:
+                continue
+            if merged.start < other.end - 0.001 and merged.end > other.start + 0.001:
+                self.status_changed.emit('Merge blocked: overlaps another segment in between')
                 return
-
         self._begin_mutation()
-        # Заменяем выделенные сегменты их новыми позициями
-        track.segments = obstacles + new_positions
-        track.segments.sort(key=lambda s: s.start)
+        track.segments = [seg for i, seg in enumerate(track.segments) if i not in selected_indexes]
+        track.segments.append(merged)
+        track.segments.sort(key=lambda seg: seg.start)
         track.ensure_full_segment()
-
-        # Восстанавливаем индексы выделения по новым позициям
-        new_selected: List[Tuple[int, int]] = []
-        for moved in new_positions:
-            idx = next(
-                (i for i, seg in enumerate(track.segments)
-                 if math.isclose(seg.start, moved.start, abs_tol=1e-4)
-                 and math.isclose(seg.end, moved.end, abs_tol=1e-4)
-                 and math.isclose(seg.source_start, moved.source_start, abs_tol=1e-4)),
-                None,
-            )
-            if idx is not None:
-                new_selected.append((track_idx, idx))
-
+        merged_index = next(
+            (i for i, seg in enumerate(track.segments)
+             if math.isclose(seg.start, merged.start, abs_tol=1e-4)
+             and math.isclose(seg.end, merged.end, abs_tol=1e-4)
+             and math.isclose(seg.source_start, merged.source_start, abs_tol=1e-4)),
+            None,
+        )
         self.project.selected_track = track_idx
-        self.project.selected_segments = new_selected
-        self.project.selected_segment = new_selected[-1] if new_selected else None
+        self.project.selected_segment = (track_idx, merged_index) if merged_index is not None else None
+        self.project.selected_segments = [self.project.selected_segment] if self.project.selected_segment else []
         self.project_changed.emit()
-        self.status_changed.emit(f'Closed gaps between {len(selected)} segments')
+        self.status_changed.emit(f'Merged {len(selected)} segments')
         self.update()
 
     def delete_automation_point(self, point_ref: Optional[Tuple[int, int]] = None) -> None:

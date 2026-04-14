@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from pydub import AudioSegment
 from PySide6.QtCore import QEvent, Qt, QThread, QTimer
-from PySide6.QtGui import QAction, QFont, QIcon, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -42,12 +42,6 @@ from ui.loaders import AudioFileLoader
 from ui.widgets import BottomTransportBar, HorizontalMeter, TrackHeaderPanel
 
 
-_APP_ICON_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    'assets', 'icons', 'app.svg',
-)
-
-
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -62,8 +56,6 @@ class MainWindow(QMainWindow):
         self.audio_cache: Dict[str, dict] = {}
         self.shortcuts: List[QShortcut] = []
         self.setWindowTitle('SimpleSound Multitrack Editor')
-        if os.path.exists(_APP_ICON_PATH):
-            self.setWindowIcon(QIcon(_APP_ICON_PATH))
         self.resize(1720, 940)
         self.setMinimumSize(1320, 760)
         self.setStyleSheet('QMainWindow{background:#181A1F;}')
@@ -80,6 +72,9 @@ class MainWindow(QMainWindow):
         self.audio_poll_timer.timeout.connect(self._poll_audio_engine)
         self._init_audio_backend()
         self._drop_placeholder_tracks()
+        # Применяем стартовое состояние lock (по умолчанию заблокировано)
+        self.canvas.set_segments_locked(True)
+        self.header_panel.set_segments_locked(True)
         self._sync_ui(True)
         self.record_history()
 
@@ -135,20 +130,29 @@ class MainWindow(QMainWindow):
         self.status_label = QLabel('Ready')
         self.statusBar().addWidget(self.status_label, 1)
 
-        # Copyright справа в status bar (без подчёркивания, hover — оранжевый)
         self.copyright_label = QLabel(
             '<a href="https://www.linkedin.com/in/ales-ushakou" '
-            'style="color:#9BA6B2;text-decoration:none;">© Aleš Ushakou, 2026</a>'
+            'style="color:#9BA6B2; text-decoration:none;">© Aleš Ushakou, 2026</a>'
         )
         self.copyright_label.setOpenExternalLinks(True)
         self.copyright_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
         self.copyright_label.setCursor(Qt.PointingHandCursor)
         self.copyright_label.setStyleSheet(
-            'QLabel { padding: 0 12px; font-size: 11px; }'
-            'QLabel a { color:#9BA6B2; text-decoration:none; }'
-            'QLabel a:hover { color:#FF8A3D; text-decoration:none; }'
-            'QLabel a:visited { color:#9BA6B2; text-decoration:none; }'
+            'QLabel { padding: 0 12px; font-size: 11px; background: transparent; }'
         )
+        # Hover-эффект меняем через enterEvent/leaveEvent, т.к. QSS :hover на <a> в QLabel не работает
+        def _on_enter(_e, label=self.copyright_label):
+            label.setText(
+                '<a href="https://www.linkedin.com/in/ales-ushakou" '
+                'style="color:#FF8A3D; text-decoration:none;">© Aleš Ushakou, 2026</a>'
+            )
+        def _on_leave(_e, label=self.copyright_label):
+            label.setText(
+                '<a href="https://www.linkedin.com/in/ales-ushakou" '
+                'style="color:#9BA6B2; text-decoration:none;">© Aleš Ushakou, 2026</a>'
+            )
+        self.copyright_label.enterEvent = _on_enter
+        self.copyright_label.leaveEvent = _on_leave
         self.statusBar().addPermanentWidget(self.copyright_label)
 
         self.statusBar().setStyleSheet(
@@ -177,10 +181,6 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.mode_label)
         left_layout.addStretch(1)
 
-        self.top_time_label = QLabel('00:00.000')
-        self.top_time_label.setAlignment(Qt.AlignCenter)
-        self.top_time_label.setStyleSheet('color:#EAECEF;font-size:16px;font-weight:800;padding:0 12px;')
-
         right_wrap = QWidget()
         right_layout = QHBoxLayout(right_wrap)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -191,7 +191,6 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.master_meter, 0, Qt.AlignRight | Qt.AlignVCenter)
 
         layout.addWidget(left_wrap, 1)
-        layout.addWidget(self.top_time_label, 0, Qt.AlignCenter)
         layout.addWidget(right_wrap, 1)
         return bar
 
@@ -228,9 +227,12 @@ class MainWindow(QMainWindow):
         self.act_delete = QAction('Delete', self)
         self.act_delete.setShortcut(QKeySequence.Delete)
         self.act_delete.setShortcutContext(Qt.ApplicationShortcut)
-        self.act_merge = QAction('Close Gaps Between Segments', self)
+        self.act_merge = QAction('Merge Selected Segments', self)
         self.act_merge.setShortcut(QKeySequence('M'))
         self.act_merge.setShortcutContext(Qt.ApplicationShortcut)
+        self.act_toggle_lock = QAction('Toggle Segment Lock', self)
+        self.act_toggle_lock.setShortcut(QKeySequence('L'))
+        self.act_toggle_lock.setShortcutContext(Qt.ApplicationShortcut)
         edit_menu.addAction(self.act_undo)
         edit_menu.addAction(self.act_redo)
         edit_menu.addSeparator()
@@ -238,14 +240,18 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.act_paste)
         edit_menu.addAction(self.act_delete)
         edit_menu.addAction(self.act_merge)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.act_toggle_lock)
 
-        # Help menu
         self.act_help = QAction('Help && Shortcuts', self)
         self.act_help.setShortcut(QKeySequence('F1'))
-        self.act_help.setShortcutContext(Qt.ApplicationShortcut)
-        self.act_about = QAction('About SimpleSound', self)
+        self.act_help.triggered.connect(self.show_help_dialog)
         help_menu.addAction(self.act_help)
+
         help_menu.addSeparator()
+
+        self.act_about = QAction('About SimpleSound', self)
+        self.act_about.triggered.connect(self.show_about_dialog)
         help_menu.addAction(self.act_about)
 
         self.act_open_tracks.triggered.connect(self.open_files)
@@ -258,16 +264,7 @@ class MainWindow(QMainWindow):
         self.act_paste.triggered.connect(self.paste_clipboard)
         self.act_delete.triggered.connect(self.canvas.delete_selected)
         self.act_merge.triggered.connect(self.merge_selected_segments)
-        self.act_help.triggered.connect(self.show_help)
-        self.act_about.triggered.connect(lambda: self.show_help(tab=2))
-
-    def show_help(self, tab: int = 0) -> None:
-        dlg = HelpDialog(self)
-        try:
-            dlg.tabs.setCurrentIndex(int(tab))
-        except Exception:
-            pass
-        dlg.exec()
+        self.act_toggle_lock.triggered.connect(self.toggle_segments_lock)
 
     def _connect_signals(self) -> None:
         self.header_panel.remove_requested.connect(self.remove_track)
@@ -275,6 +272,7 @@ class MainWindow(QMainWindow):
         self.header_panel.mute_requested.connect(self.toggle_mute)
         self.header_panel.reset_automation_requested.connect(self.clear_automation)
         self.header_panel.select_requested.connect(self.select_track)
+        self.header_panel.lock_toggled.connect(self.set_segments_locked)
 
         self.canvas.project_changed.connect(lambda: self._sync_ui(False))
         self.canvas.selection_changed.connect(lambda: self._sync_ui(False))
@@ -290,6 +288,8 @@ class MainWindow(QMainWindow):
         self.bottom_bar.merge_requested.connect(self.merge_selected_segments)
         self.bottom_bar.zoom_changed.connect(self._set_zoom_from_bottom_slider)
         self.bottom_bar.zoom_reset_requested.connect(self.reset_zoom)
+        self.bottom_bar.peak_prev_requested.connect(self.jump_to_prev_peak)
+        self.bottom_bar.peak_next_requested.connect(self.jump_to_next_peak)
 
         self.header_scroll.verticalScrollBar().valueChanged.connect(
             self.canvas_scroll.verticalScrollBar().setValue
@@ -309,14 +309,57 @@ class MainWindow(QMainWindow):
             self.shortcuts.append(shortcut)
 
         add_shortcut(Qt.Key_Space, self.toggle_play_pause)
+        add_shortcut('Shift+Space', self.jump_to_next_peak)
+        add_shortcut('Ctrl+Shift+Space', self.jump_to_prev_peak)
         add_shortcut('Ctrl+Y', self.redo)
         add_shortcut('C', self.cut_at_playhead)
         add_shortcut('M', self.merge_selected_segments)
+        add_shortcut('L', self.toggle_segments_lock)
         add_shortcut(Qt.Key_Home, self.jump_to_start)
         add_shortcut(Qt.Key_End, self.jump_to_end)
-        add_shortcut('0', self.reset_zoom)
         for index in range(1, 10):
             add_shortcut(str(index), lambda idx=index - 1: self.solo_track_by_number(idx))
+
+    # --------- Help ---------
+
+    def show_help_dialog(self) -> None:
+        dlg = HelpDialog(self)
+        dlg.exec()
+
+    def show_about_dialog(self) -> None:
+        dlg = HelpDialog(self, initial_tab=HelpDialog.TAB_ABOUT)
+        dlg.exec()
+
+    # --------- Segments lock ---------
+
+    def set_segments_locked(self, locked: bool) -> None:
+        locked = bool(locked)
+        self.canvas.set_segments_locked(locked)
+        self.header_panel.set_segments_locked(locked)
+        self.status_label.setText('Segments locked' if locked else 'Segments unlocked')
+
+    def toggle_segments_lock(self) -> None:
+        self.set_segments_locked(not self.canvas.segments_locked)
+
+    # --------- Peak navigation ---------
+
+    def jump_to_next_peak(self) -> None:
+        t = self.canvas.find_nearest_peak(+1)
+        if t is None:
+            self.status_label.setText('No peak found ahead')
+            return
+        self.set_playhead(t, preserve_selection=False)
+        self.scroll_timeline_to_time(t, align='center')
+        self.status_label.setText(f'Jumped to next peak: {t:.3f}s')
+
+    def jump_to_prev_peak(self) -> None:
+        t = self.canvas.find_nearest_peak(-1)
+        if t is None:
+            self.status_label.setText('No peak found behind')
+            return
+        self.set_playhead(t, preserve_selection=False)
+        self.scroll_timeline_to_time(t, align='center')
+        self.status_label.setText(f'Jumped to previous peak: {t:.3f}s')
 
     # --------- Audio backend ---------
 
@@ -567,7 +610,7 @@ class MainWindow(QMainWindow):
             self.project.selection_range = None
         for track in self.project.tracks:
             track.ensure_full_segment()
-        self.top_time_label.setText(self._format_time_display(self.project.playhead_time))
+        self.bottom_bar.update_time(self.project.playhead_time)
         self.bottom_bar.update_play_button(self.project.playing)
         self.master_meter.set_levels(
             self.project.master_l, self.project.master_r,
@@ -623,7 +666,7 @@ class MainWindow(QMainWindow):
     def _on_playhead_changed(self, value: float) -> None:
         previous_time = self.project.playhead_time
         self.project.playhead_time = value
-        self.top_time_label.setText(self._format_time_display(value))
+        self.bottom_bar.update_time(value)
         old_x = self.canvas.time_to_x(previous_time)
         new_x = self.canvas.time_to_x(value)
         if self.project.playing:
@@ -652,7 +695,7 @@ class MainWindow(QMainWindow):
         self.project.master_peak_l = -60.0
         self.project.master_peak_r = -60.0
         self.bottom_bar.update_play_button(False)
-        self.top_time_label.setText(self._format_time_display(restart_pos))
+        self.bottom_bar.update_time(restart_pos)
         self.header_panel.refresh()
         self.master_meter.set_levels(-60.0, -60.0, -60.0, -60.0)
         self.canvas.update()
@@ -670,7 +713,7 @@ class MainWindow(QMainWindow):
         else:
             end = total_duration
         self.project.playhead_time = value
-        self.top_time_label.setText(self._format_time_display(value))
+        self.bottom_bar.update_time(value)
         self.canvas.update()
         if self.project.playing and self.audio_engine is not None:
             self.audio_engine.stop()
@@ -783,7 +826,7 @@ class MainWindow(QMainWindow):
     def merge_selected_segments(self) -> None:
         before = self.canvas._mergeable_selected_segments()
         if len(before) < 2:
-            self.status_label.setText('Select 2+ segments on the same track to close gaps')
+            self.status_label.setText('Select 2+ segments on the same track to merge')
             return
         self.canvas.merge_selected_segments()
         self._sync_ui(True)
@@ -864,6 +907,8 @@ class MainWindow(QMainWindow):
             self.project.selected_track = len(self.project.tracks) - 1
             self.project.playhead_time = 0.0
             self.header_panel.rebuild()
+            # Новый трек тоже должен знать текущее состояние lock
+            self.header_panel.set_segments_locked(self.canvas.segments_locked)
             self._sync_ui(True)
             self.status_label.setText(f'Loaded {len(tracks)} track(s)')
 
@@ -896,6 +941,7 @@ class MainWindow(QMainWindow):
         self.project.selected_segment = None
         self.project.selected_segments = []
         self.header_panel.rebuild()
+        self.header_panel.set_segments_locked(self.canvas.segments_locked)
         self._sync_ui(True)
 
     def toggle_solo(self, index: int) -> None:
@@ -1077,6 +1123,7 @@ class MainWindow(QMainWindow):
             data['project_path'] = path
             self.history.clear()
             self._restore_project_from_dict(data)
+            self.header_panel.set_segments_locked(self.canvas.segments_locked)
             self.record_history()
             self.status_label.setText(f'Project loaded: {os.path.basename(path)}')
         except Exception as exc:
