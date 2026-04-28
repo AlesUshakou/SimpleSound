@@ -89,7 +89,9 @@ class TrackModel:
                 AutomationPoint(0.0, 0.5),
                 AutomationPoint(max(0.1, self.duration), 0.5),
             ]
-        if not self.segments and self.duration > 0:
+        # Only create a default segment for tracks with audio content (file_path set).
+        # Intentionally empty tracks (no file_path) must stay segment-free.
+        if not self.segments and self.duration > 0 and self.file_path:
             self.segments = [TrackSegment(0.0, self.duration, 0.0)]
         self.ensure_full_segment()
 

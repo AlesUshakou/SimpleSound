@@ -36,6 +36,7 @@ from core.models import (
     TrackSegment,
 )
 from ui.canvas import TimelineCanvas
+from ui.export_dialog import ExportDialog
 from ui.help_dialog import HelpDialog
 from ui.loaders import AudioFileLoader
 from ui.widgets import BottomTransportBar, HorizontalMeter, TrackHeaderPanel
@@ -217,6 +218,10 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.act_save_project)
         file_menu.addAction(self.act_save_project_as)
+        file_menu.addSeparator()
+        self.act_export = QAction('Export Audio...', self)
+        self.act_export.setShortcut(QKeySequence('Ctrl+E'))
+        file_menu.addAction(self.act_export)
 
         self.act_undo = QAction('Undo', self)
         self.act_undo.setShortcut(QKeySequence('Ctrl+Z'))
@@ -257,6 +262,7 @@ class MainWindow(QMainWindow):
         self.act_open_project.triggered.connect(self.open_project_dialog)
         self.act_save_project.triggered.connect(self.save_project)
         self.act_save_project_as.triggered.connect(self.save_project_as)
+        self.act_export.triggered.connect(self.export_audio)
         self.act_undo.triggered.connect(self.undo)
         self.act_redo.triggered.connect(self.redo)
         self.act_delete.triggered.connect(self.canvas.delete_selected)
@@ -551,7 +557,10 @@ class MainWindow(QMainWindow):
                         source_sample_rate=getattr(s, 'source_sample_rate', None),
                     )
                     for s in track.segments
-                ] or [TrackSegment(0.0, track.duration, 0.0)]
+                ]
+                # Only create a fallback segment for tracks with audio, not empty ones
+                if not track.segments and track.file_path and track.duration > 0:
+                    track.segments = [TrackSegment(0.0, track.duration, 0.0)]
                 track.ensure_full_segment()
                 project.add_track(track)
             self.project = project
@@ -1152,6 +1161,13 @@ class MainWindow(QMainWindow):
             self._sync_ui(False)
         except Exception as exc:
             QMessageBox.critical(self, 'Save Project', f'Failed to save project.\n\n{exc}')
+
+    def export_audio(self) -> None:
+        if not self.project.tracks:
+            self.status_label.setText('Nothing to export — project is empty')
+            return
+        dlg = ExportDialog(self.project, self)
+        dlg.exec()
 
     def open_project_dialog(self) -> None:
         if not self._check_unsaved():

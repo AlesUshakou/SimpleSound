@@ -529,6 +529,7 @@ class TimelineCanvas(QWidget):
         path.moveTo(self.time_to_x(first.time), self.automation_value_to_y(index, first.value))
         for point in points[1:]:
             path.lineTo(self.time_to_x(point.time), self.automation_value_to_y(index, point.value))
+        painter.setBrush(Qt.NoBrush)
         painter.setPen(QPen(Theme.ACCENT_SOFT, 2))
         painter.drawPath(path)
         center_y = self.automation_value_to_y(index, 0.5)
