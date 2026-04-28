@@ -151,7 +151,7 @@ Because segments are just views into the original audio with a time offset, cutt
 
 ## Release notes
 
-[Changelog](CHANGELOG.md)
+[Changelog] (CHANGELOG.md)
 
 ---
 
