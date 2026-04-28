@@ -48,6 +48,8 @@ python -m venv .venv
 source .venv/bin/activate         # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
+or Installation (Windows):
+- Download latest version from [releases](https://github.com/AlesUshakou/SimpleSound/releases)
 
 ### Run
 
@@ -124,10 +126,6 @@ SimpleSound mixes all active tracks in a PortAudio callback at 48 kHz / stereo /
 Because segments are just views into the original audio with a time offset, cutting, moving, and trimming are instant and non-destructive.
 
 ---
-
-### Installation (Windows):
-- Download latest version from [releases](https://github.com/AlesUshakou/SimpleSound/releases)
-
 
 ## File Descriptions
 
