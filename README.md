@@ -60,16 +60,6 @@ or Installation (Windows):
 python main.py
 ```
 
-### Build EXE (Windows)
-
-Place `build.bat` in the project root and double-click it. Requires Python and pip on PATH.
-
-```bash
-build.bat
-```
-
-The resulting single-file EXE is created at `dist\SimpleSound.exe`.
-
 ---
 
 ## `requirements.txt`
@@ -151,7 +141,7 @@ Because segments are just views into the original audio with a time offset, cutt
 
 ## Release notes
 
-[Changelog] (CHANGELOG.md)
+[Changelog](CHANGELOG.md)
 
 ---
 
