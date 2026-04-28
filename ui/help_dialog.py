@@ -60,11 +60,13 @@ SHORTCUTS: List[Tuple[str, List[Tuple[str, str]]]] = [
         ('Right-click', 'Context menu'),
     ]),
     ('Project', [
+        ('Ctrl + N', 'New project'),
         ('Ctrl + O', 'Open audio files'),
         ('Ctrl + Shift + O', 'Open project'),
         ('Ctrl + S', 'Save project'),
         ('Ctrl + Shift + S', 'Save project as...'),
-        ('Drag & drop audio files', 'Drop .wav/.mp3/.flac/.ogg/.m4a onto the timeline to add tracks'),
+        ('Ctrl + E', 'Export audio (WAV, MP3, OGG, FLAC, M4A)'),
+        ('Drag & drop audio files', 'Drop .wav/.mp3/.flac/.ogg/.m4a anywhere in the window to add tracks'),
     ]),
 ]
 
@@ -73,16 +75,18 @@ QUICK_START_TEXT = """
 <h3 style='color:#FF8A3D;'>Getting started</h3>
 <ol style='line-height:1.6;'>
   <li><b>Load audio.</b> <code>File &rarr; Open Tracks&hellip;</code>, pick WAV / MP3 / FLAC / OGG / M4A,
-      or <b>drag &amp; drop</b> audio files directly onto the timeline.
+      or <b>drag &amp; drop</b> audio files anywhere in the application window.
       Each file becomes a separate track stacked vertically.</li>
   <li><b>Add / remove tracks.</b> Use the <b>+</b> and <b>trash</b> buttons in the track
       panel toolbar above the track list. The trash button deletes the currently
-      selected track.</li>
+      selected track. Empty tracks can receive segments dragged from other tracks.</li>
   <li><b>Play / navigate.</b> Click on the waveform to move the playhead, or press
       <code>Space</code> to play. Home / End jump to start / end. Use
       <code>Shift + Space</code> / <code>Ctrl + Shift + Space</code> to hop between
       loud peaks in the waveform.</li>
-  <li><b>Cut.</b> Press <code>C</code> to split a segment at the playhead.</li>
+  <li><b>Cut.</b> Press <code>C</code> to split a segment at the playhead on the
+      selected track. You can select any track independently, even when another
+      track is solo'd.</li>
   <li><b>Rearrange.</b> Tracks are <b>unlocked by default</b>. Drag a segment's body to
       move it along the timeline, or drag it <b>vertically onto another track</b> &mdash;
       a green ghost shows where it will land, or red if it doesn't fit. Drag
@@ -96,7 +100,11 @@ QUICK_START_TEXT = """
   <li><b>Automate volume.</b> <code>Ctrl + Click</code> on a track adds an automation point.
       Drag points up/down to change the gain along the timeline.</li>
   <li><b>Solo / Mute.</b> Click <b>S</b> or <b>M</b> on the track header. Numbers
-      <code>1&hellip;9</code> solo the N-th track.</li>
+      <code>1&hellip;9</code> solo the N-th track. Solo controls audio routing only &mdash;
+      you can still select and edit any track while another is solo'd.</li>
+  <li><b>Export.</b> <code>Ctrl + E</code> or <code>File &rarr; Export Audio&hellip;</code>
+      opens the export dialog. Choose WAV, MP3, OGG, FLAC, or M4A with
+      configurable sample rate, bit depth, and bitrate.</li>
   <li><b>Save.</b> <code>Ctrl + S</code> saves the project as <code>.ssproj</code>
       (references source audio files by path). Recent projects are available
       from <code>File &rarr; Recent Projects</code>.</li>
@@ -113,7 +121,16 @@ hide drag/resize cursors and prevent segment operations.</p>
 the segment there. A <b style='color:#3DFF8A;'>green</b> ghost preview means
 the segment fits; <b style='color:#FF3D3D;'>red</b> means it doesn't.
 On release, the segment snaps to the nearest available gap. If no space
-exists, the segment returns to its original position.</p>
+exists, the segment returns to its original position. Cross-track audio
+references are preserved &mdash; the waveform and sound travel with the segment.</p>
+
+<h3 style='color:#FF8A3D;margin-top:14px;'>Export audio</h3>
+<p>The export dialog (<code>Ctrl + E</code>) renders the full project mix offline
+and saves it to a file. Supported formats: <b>WAV</b> (16/24/32-bit),
+<b>MP3</b>, <b>OGG Vorbis</b>, <b>FLAC</b>, <b>M4A/AAC</b>. Each format
+has its own parameter panel (sample rate, bit depth, bitrate). The render
+uses the same mix logic as real-time playback, including automation. Muted
+tracks are excluded; all non-muted tracks are included regardless of solo.</p>
 
 <h3 style='color:#FF8A3D;margin-top:14px;'>Peak jump</h3>
 <p>The <b>peak-jump buttons</b> flank the Play button in the bottom bar, and
@@ -128,8 +145,7 @@ ABOUT_TEXT = """
 <h2 style='color:#FF8A3D;margin:0;'>SimpleSound</h2>
 <p style='color:#9BA6B2;margin:2px 0 14px 0;'>Multitrack audio editor</p>
 
-<p>A lightweight multitrack editor for quickly aligning, cutting and mixing audio files.
-Built with Python + PySide6, using PortAudio for low-latency playback.</p>
+<p>A lightweight multitrack editor for quickly aligning, cutting and mixing audio files.</p>
 
 <p style='margin-top:14px;'>
   <b>Author:</b> Ale&scaron; Ushakou<br>

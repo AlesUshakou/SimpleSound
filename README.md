@@ -12,14 +12,17 @@ A lightweight multitrack audio editor. Load several tracks, align them, cut and 
 
 - **Multitrack editing** — load multiple WAV / MP3 / FLAC / OGG / M4A files, each as a separate track.
 - **Non-destructive segments** — cut, move and trim segments without touching the source audio. Drag the body to reposition, drag the edge to trim.
-- **Segment lock** — per-track lock (and global `L` shortcut) protects segments from accidental drags; locked by default.
+- **Cross-track drag** — drag a segment onto another track with a live ghost preview (green = fits, red = doesn't).
+- **Segment lock** — per-track lock (`L` shortcut) protects segments from accidental drags; unlocked by default.
 - **Peak jump** — step the playhead between loud peaks in the waveform via `Shift + Space` / `Ctrl + Shift + Space`.
 - **Volume automation** — draw gain envelopes per track with `Ctrl + Click` to add points and drag to shape them.
 - **Close gaps** — multi-select segments and press `M` to slide right segments flush against the left one (keeps them as separate segments).
 - **Real-time playback** via PortAudio with low-latency metering (per-track + master, L/R peak-and-RMS meters).
 - **Solo / Mute** per track, number keys `1…9` for quick solo.
+- **Export audio** — render the full mix to WAV, MP3, OGG, FLAC, or M4A with configurable sample rate, bit depth, and bitrate (`Ctrl+E`).
 - **Undo / Redo** with full project snapshots.
 - **Project save/load** (`.ssproj`, JSON format — references audio files by path).
+- **Drag & drop** — drop audio files anywhere in the window to add tracks.
 
 
 ---
@@ -57,6 +60,16 @@ or Installation (Windows):
 python main.py
 ```
 
+### Build EXE (Windows)
+
+Place `build.bat` in the project root and double-click it. Requires Python and pip on PATH.
+
+```bash
+build.bat
+```
+
+The resulting single-file EXE is created at `dist\SimpleSound.exe`.
+
 ---
 
 ## `requirements.txt`
@@ -81,17 +94,18 @@ sounddevice>=0.4
 | Transport | `1` … `9` | Solo track N |
 | Editing | `C` | Cut at playhead |
 | Editing | `M` | Close gaps between selected segments |
-| Editing | `L` | Toggle segment lock on all tracks |
+| Editing | `L` | Toggle segment lock on selected track |
 | Editing | `Delete` | Delete selection / segment / automation point |
-| Editing | `Ctrl + C` / `Ctrl + V` | Copy / Paste |
 | Editing | `Ctrl + Z` / `Ctrl + Shift + Z` | Undo / Redo |
 | View | `Ctrl + Wheel` | Zoom around playhead |
 | View | `Shift + Wheel` | Horizontal scroll |
 | View | `0` | Reset zoom |
+| Project | `Ctrl + N` | New project |
 | Project | `Ctrl + O` | Open audio files |
 | Project | `Ctrl + Shift + O` | Open project |
 | Project | `Ctrl + S` | Save project |
 | Project | `Ctrl + Shift + S` | Save project as... |
+| Project | `Ctrl + E` | Export audio |
 | Help | `F1` | Help & Shortcuts dialog |
 
 Full list is available in-app via **Help → Help & Shortcuts** (or `F1`).
@@ -101,14 +115,16 @@ Full list is available in-app via **Help → Help & Shortcuts** (or `F1`).
 ## Mouse
 
 - **Click** on the waveform — move the playhead.
-- **Click + drag** — create a time selection.
 - **Ctrl + Click** on a track — add an automation point.
 - **Drag an automation point** — move it.
 - **Shift + Click** on a segment — add it to multi-selection.
 - **Double-click** on a segment — select / deselect it.
 - **Drag segment body** — move it along the timeline (unlocked only).
+- **Drag segment to another track** — cross-track move with fit preview (unlocked only).
 - **Drag segment edge** — trim it (unlocked only).
+- **Drag track header** — reorder tracks (unlocked only).
 - **Right-click** — context menu (add automation point, delete, merge, etc.).
+- **Drag & drop audio files** — drop anywhere in the window to add tracks.
 
 
 ---
@@ -135,7 +151,7 @@ Because segments are just views into the original audio with a time offset, cutt
 
 ## Release notes
 
-[Changelog] (CHANGELOG.md)
+[Changelog](CHANGELOG.md)
 
 ---
 
