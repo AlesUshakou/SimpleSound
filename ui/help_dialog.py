@@ -35,10 +35,8 @@ SHORTCUTS: List[Tuple[str, List[Tuple[str, str]]]] = [
     ('Editing', [
         ('C', 'Cut at playhead on the selected track'),
         ('M', 'Close gaps between selected segments'),
-        ('L', 'Toggle segment lock on all tracks'),
-        ('Delete', 'Delete selection / selected segment / automation point'),
-        ('Ctrl + C', 'Copy selection or selected segment'),
-        ('Ctrl + V', 'Paste at playhead'),
+        ('L', 'Toggle segment lock on the selected track'),
+        ('Delete', 'Delete selected segment / automation point'),
         ('Ctrl + Z', 'Undo'),
         ('Ctrl + Shift + Z / Ctrl + Y', 'Redo'),
     ]),
@@ -51,13 +49,14 @@ SHORTCUTS: List[Tuple[str, List[Tuple[str, str]]]] = [
     ]),
     ('Mouse', [
         ('Click on waveform', 'Move playhead'),
-        ('Click + drag', 'Create time selection'),
         ('Ctrl + Click on track', 'Add automation point'),
         ('Drag automation point', 'Move automation point'),
         ('Shift + Click on segment', 'Add segment to multi-selection'),
         ('Double-click on segment', 'Select / deselect segment'),
         ('Drag segment body', 'Move segment along timeline (unlocked only)'),
+        ('Drag segment to another track', 'Move segment across tracks (unlocked, with fit preview)'),
         ('Drag segment edge', 'Trim segment (unlocked only)'),
+        ('Drag track header', 'Reorder tracks (unlocked only)'),
         ('Right-click', 'Context menu'),
     ]),
     ('Project', [
@@ -65,6 +64,7 @@ SHORTCUTS: List[Tuple[str, List[Tuple[str, str]]]] = [
         ('Ctrl + Shift + O', 'Open project'),
         ('Ctrl + S', 'Save project'),
         ('Ctrl + Shift + S', 'Save project as...'),
+        ('Drag & drop audio files', 'Drop .wav/.mp3/.flac/.ogg/.m4a onto the timeline to add tracks'),
     ]),
 ]
 
@@ -72,33 +72,48 @@ SHORTCUTS: List[Tuple[str, List[Tuple[str, str]]]] = [
 QUICK_START_TEXT = """
 <h3 style='color:#FF8A3D;'>Getting started</h3>
 <ol style='line-height:1.6;'>
-  <li><b>Load audio.</b> <code>File → Open Tracks…</code> and pick WAV / MP3 / FLAC / OGG / M4A.
+  <li><b>Load audio.</b> <code>File &rarr; Open Tracks&hellip;</code>, pick WAV / MP3 / FLAC / OGG / M4A,
+      or <b>drag &amp; drop</b> audio files directly onto the timeline.
       Each file becomes a separate track stacked vertically.</li>
+  <li><b>Add / remove tracks.</b> Use the <b>+</b> and <b>trash</b> buttons in the track
+      panel toolbar above the track list. The trash button deletes the currently
+      selected track.</li>
   <li><b>Play / navigate.</b> Click on the waveform to move the playhead, or press
       <code>Space</code> to play. Home / End jump to start / end. Use
       <code>Shift + Space</code> / <code>Ctrl + Shift + Space</code> to hop between
       loud peaks in the waveform.</li>
-  <li><b>Select &amp; cut.</b> Drag on a track to select a time range, then press
-      <code>Delete</code> to remove it. Press <code>C</code> to split a segment at the playhead.</li>
-  <li><b>Rearrange.</b> Unlock segments first (lock icon on the track header or
-      press <code>L</code>), then drag a segment's body to move it, or drag its
-      left/right edge to trim. Hold <code>Shift</code> and click segments to
-      multi-select, then press <code>M</code> to close the gaps between them
-      (right segments slide flush against the left one).</li>
+  <li><b>Cut.</b> Press <code>C</code> to split a segment at the playhead.</li>
+  <li><b>Rearrange.</b> Tracks are <b>unlocked by default</b>. Drag a segment's body to
+      move it along the timeline, or drag it <b>vertically onto another track</b> &mdash;
+      a green ghost shows where it will land, or red if it doesn't fit. Drag
+      left/right edges to trim. Hold <code>Shift</code> and click segments to
+      multi-select, then press <code>M</code> to merge them.</li>
+  <li><b>Reorder tracks.</b> Drag a track header up or down to change the order
+      (the track must be unlocked).</li>
+  <li><b>Per-track lock.</b> The lock icon on each track header (or <code>L</code> for the
+      selected track) locks/unlocks that track independently. Locked tracks
+      prevent accidental segment moves and trims.</li>
   <li><b>Automate volume.</b> <code>Ctrl + Click</code> on a track adds an automation point.
       Drag points up/down to change the gain along the timeline.</li>
   <li><b>Solo / Mute.</b> Click <b>S</b> or <b>M</b> on the track header. Numbers
-      <code>1…9</code> solo the N-th track.</li>
+      <code>1&hellip;9</code> solo the N-th track.</li>
   <li><b>Save.</b> <code>Ctrl + S</code> saves the project as <code>.ssproj</code>
-      (references source audio files by path).</li>
+      (references source audio files by path). Recent projects are available
+      from <code>File &rarr; Recent Projects</code>.</li>
 </ol>
 
-<h3 style='color:#FF8A3D;margin-top:18px;'>Segment lock</h3>
-<p>The <b>lock icon</b> on each track header (and the global <code>L</code> shortcut)
-toggles whether segments can be moved or trimmed. <b>Locked is the default</b> —
-this prevents accidental edits while you navigate, select, and play back. Hand
-and resize cursors are hidden over segments while locked. Unlock to rearrange,
-then lock again when you're done.</p>
+<h3 style='color:#FF8A3D;margin-top:18px;'>Per-track lock</h3>
+<p>Each track has its own <b>lock</b>. By default tracks are <b>unlocked</b>,
+allowing free segment editing. Click the lock icon on a specific track header
+to lock it, or press <code>L</code> to toggle the selected track. Locked tracks
+hide drag/resize cursors and prevent segment operations.</p>
+
+<h3 style='color:#FF8A3D;margin-top:14px;'>Cross-track segment drag</h3>
+<p>When dragging a segment body, move the mouse onto another track to move
+the segment there. A <b style='color:#3DFF8A;'>green</b> ghost preview means
+the segment fits; <b style='color:#FF3D3D;'>red</b> means it doesn't.
+On release, the segment snaps to the nearest available gap. If no space
+exists, the segment returns to its original position.</p>
 
 <h3 style='color:#FF8A3D;margin-top:14px;'>Peak jump</h3>
 <p>The <b>peak-jump buttons</b> flank the Play button in the bottom bar, and
@@ -117,7 +132,7 @@ ABOUT_TEXT = """
 Built with Python + PySide6, using PortAudio for low-latency playback.</p>
 
 <p style='margin-top:14px;'>
-  <b>Author:</b> Aleš Ushakou<br>
+  <b>Author:</b> Ale&scaron; Ushakou<br>
   <b>Year:</b> 2026<br>
   <b>License:</b> MIT
 </p>
@@ -135,7 +150,7 @@ class HelpDialog(QDialog):
 
     def __init__(self, parent=None, initial_tab: str = TAB_SHORTCUTS):
         super().__init__(parent)
-        self.setWindowTitle('SimpleSound — Help')
+        self.setWindowTitle('SimpleSound \u2014 Help')
         self.setMinimumSize(640, 560)
         self.setStyleSheet(
             'QDialog { background:#181A1F; }'
@@ -168,7 +183,7 @@ class HelpDialog(QDialog):
         title_box.setSpacing(2)
         title = QLabel('SimpleSound')
         title.setStyleSheet('color:#EAECEF;font-size:20px;font-weight:800;')
-        subtitle = QLabel('Multitrack audio editor — Help & Reference')
+        subtitle = QLabel('Multitrack audio editor \u2014 Help & Reference')
         subtitle.setStyleSheet('color:#9BA6B2;font-size:12px;')
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
@@ -177,7 +192,6 @@ class HelpDialog(QDialog):
         root.addLayout(header)
 
         self.tabs = QTabWidget()
-        # Индексы табов фиксируем по порядку добавления
         self._tab_indexes = {
             self.TAB_SHORTCUTS: self.tabs.addTab(self._build_shortcuts_tab(), 'Shortcuts'),
             self.TAB_QUICK_START: self.tabs.addTab(self._build_text_tab(QUICK_START_TEXT), 'Quick Start'),
@@ -185,7 +199,6 @@ class HelpDialog(QDialog):
         }
         root.addWidget(self.tabs, 1)
 
-        # Устанавливаем стартовую вкладку
         if initial_tab in self._tab_indexes:
             self.tabs.setCurrentIndex(self._tab_indexes[initial_tab])
 

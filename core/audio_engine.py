@@ -27,7 +27,7 @@ class SnapshotTrack:
     index: int
     audio_data: np.ndarray
     duration: float
-    segments: List[Tuple[float, float, float]]
+    segments: List[Tuple[float, float, float, np.ndarray]]
     automation_times: np.ndarray
     automation_values: np.ndarray
 
@@ -87,6 +87,11 @@ class PortAudioAudioEngine:
         }
         self._last_snapshot_time = 0.0
         self._callback_started = False
+        # Pre-open stream for instant playback start
+        try:
+            self._ensure_stream()
+        except Exception:
+            pass
 
     # --------- Public API ---------
 
@@ -122,21 +127,12 @@ class PortAudioAudioEngine:
             self._last_snapshot_time = time.perf_counter()
 
     def stop(self) -> None:
-        stream = None
         with self._lock:
-            stream = self._stream
             self._playing = False
             self._callback_started = False
             self._play_start_dac_time = None
             self._reset_meters_locked()
-        if stream is not None:
-            try:
-                stream.abort(ignore_errors=True)
-            except Exception:
-                try:
-                    stream.stop(ignore_errors=True)
-                except Exception:
-                    pass
+        # Stream stays open — callback will output silence when _playing is False
 
     def close(self) -> None:
         stream = None
@@ -254,21 +250,39 @@ class PortAudioAudioEngine:
             if index not in active_indexes:
                 continue
             audio = getattr(track, 'audio_data', None)
-            if audio is None or getattr(audio, 'size', 0) == 0:
-                continue
             duration = float(getattr(track, 'duration', 0.0))
             raw_segments = getattr(track, 'segments', None) or []
-            segments: List[Tuple[float, float, float]] = []
+
+            # Check if any segment has its own cross-track audio
+            has_any_audio = (audio is not None and getattr(audio, 'size', 0) > 0)
+            if not has_any_audio:
+                has_any_audio = any(
+                    getattr(seg, 'source_audio', None) is not None
+                    and getattr(getattr(seg, 'source_audio', None), 'size', 0) > 0
+                    for seg in raw_segments
+                )
+            if not has_any_audio:
+                continue
+
+            segments: List[Tuple[float, float, float, np.ndarray]] = []
             if not raw_segments:
-                if duration > 0.0:
-                    segments = [(0.0, duration, 0.0)]
+                if duration > 0.0 and audio is not None:
+                    segments = [(0.0, duration, 0.0, audio)]
             else:
                 for seg in raw_segments:
                     start = max(0.0, float(getattr(seg, 'start', 0.0)))
                     end = min(duration + 120.0, float(getattr(seg, 'end', duration)))
                     source_start = max(0.0, float(getattr(seg, 'source_start', start)))
+                    # Use segment's own audio source if cross-track, otherwise track's
+                    seg_audio = getattr(seg, 'source_audio', None)
+                    if seg_audio is None:
+                        seg_audio = audio
+                    if seg_audio is None:
+                        continue  # No audio source at all for this segment
+                    if not (isinstance(seg_audio, np.ndarray) and seg_audio.dtype == np.float32 and seg_audio.flags.c_contiguous):
+                        seg_audio = np.ascontiguousarray(np.asarray(seg_audio, dtype=np.float32))
                     if end > start:
-                        segments.append((start, end, source_start))
+                        segments.append((start, end, source_start, seg_audio))
             points = sorted(getattr(track, 'automation_points', []), key=lambda p: getattr(p, 'time', 0.0))
             if not points:
                 automation_times = np.array([0.0, duration], dtype=np.float32)
@@ -282,12 +296,17 @@ class PortAudioAudioEngine:
                 if duration > 0.0 and automation_times[-1] < duration:
                     automation_times = np.append(automation_times, duration)
                     automation_values = np.append(automation_values, automation_values[-1])
+            if not segments:
+                continue  # Skip tracks with no playable segments
+            # audio_data for the track (may be None for empty tracks with cross-track segments)
+            track_audio = (
+                audio if isinstance(audio, np.ndarray) and audio.dtype == np.float32 and audio.flags.c_contiguous
+                else (np.ascontiguousarray(np.asarray(audio, dtype=np.float32)) if audio is not None
+                      else np.zeros((0, self.channels), dtype=np.float32))
+            )
             tracks.append(SnapshotTrack(
                 index=index,
-                audio_data=(
-                    audio if isinstance(audio, np.ndarray) and audio.dtype == np.float32 and audio.flags.c_contiguous
-                    else np.ascontiguousarray(np.asarray(audio, dtype=np.float32))
-                ),
+                audio_data=track_audio,
                 duration=duration,
                 segments=segments,
                 automation_times=automation_times,
@@ -368,17 +387,18 @@ class PortAudioAudioEngine:
 
     def _mix_track(self, track: SnapshotTrack, start_time: float, frames: int) -> np.ndarray:
         out = np.zeros((frames, self.channels), dtype=np.float32)
-        if track.audio_data is None or not track.segments:
+        if not track.segments:
             return out
 
-        # Векторизованный гейн на весь блок — в разы быстрее покадрового
         gains = track.gains_for_block(start_time, frames, self.sample_rate).reshape(-1, 1)
         block_end_time = start_time + frames / float(self.sample_rate)
 
         for seg in track.segments:
-            seg_start, seg_end, source_start = seg
+            seg_start, seg_end, source_start, seg_audio = seg
 
-            # Пересечение блока и сегмента
+            if seg_audio is None or seg_audio.size == 0:
+                continue
+
             overlap_start = max(start_time, seg_start)
             overlap_end = min(block_end_time, seg_end)
             if overlap_end <= overlap_start:
@@ -391,14 +411,13 @@ class PortAudioAudioEngine:
             src_anchor = int(round(source_start * self.sample_rate))
             src_start = src_anchor + int(round((overlap_start - seg_start) * self.sample_rate))
 
-            if src_start < 0 or src_start >= track.audio_data.shape[0]:
+            if src_start < 0 or src_start >= seg_audio.shape[0]:
                 continue
-            take_frames = min(take_frames, track.audio_data.shape[0] - src_start)
+            take_frames = min(take_frames, seg_audio.shape[0] - src_start)
             if take_frames <= 0:
                 continue
 
-            # Главная операция — на уровне C через numpy
-            src_slice = track.audio_data[src_start: src_start + take_frames]
+            src_slice = seg_audio[src_start: src_start + take_frames]
             gain_slice = gains[dst_start: dst_start + take_frames]
             out[dst_start: dst_start + take_frames] += src_slice * gain_slice
 

@@ -125,35 +125,19 @@ Because segments are just views into the original audio with a time offset, cutt
 
 ---
 
+### Installation (Windows):
+- Download latest version from [releases](https://github.com/AlesUshakou/SimpleSound/releases)
+
+
+## File Descriptions
+
+[View File Descriptions](SUMMARY.md)
+
+---
+
 ## Release notes
 
-### 14 April 2026
-
-**UI pass: redesigned bottom transport bar, segment lock, peak jump, empty-state canvas.**
-
-#### New features
-
-- **Segment lock.** Each track header now has a lock button (SVG icon). Locked by default to prevent accidental segment moves or trims while navigating. Press `L` to toggle lock on all tracks at once. While locked, hand and resize cursors are hidden over segments, and drag / trim are disabled.
-- **Peak jump.** Two new buttons flank the Play button: jump to the previous / next loud peak in the waveform. Shortcuts: `Shift + Space` (next), `Ctrl + Shift + Space` (previous). Works across all loaded tracks, using mipmap data with an adaptive 92nd-percentile threshold and distance-weighted scoring.
-- **Empty state.** With no tracks loaded, the timeline ruler and playhead are hidden. The canvas shows a subtle grid and a centred *"Drag & drop audio files here"* badge instead.
-- **Separate About entry.** Help menu now has two items: **Help & Shortcuts** (`F1`) and **About SimpleSound**. Both open the same dialog; About opens it directly on the About tab.
-
-#### Redesign
-
-- **Bottom transport bar.** Redesigned in a studio style with three dark capsule groups, gradient backgrounds, and accent glow on hover. New layout: `[transport + edit] ← stretch → [time display] ← stretch → [zoom]`.
-- **Play button** squared off (10 px radius), sized to match the transport row.
-- **Time display** moved from the top bar to the bottom centre, styled as an LCD-style readout.
-- **Zoom slider** with gradient sub-page and glowing handle, plus a `1:1` reset button.
-- **All transport icons** replaced with inline SVG — crisp at any DPI, easily recolourable.
-- **Copyright link** in the status bar: fixed stray underline that Qt's rich-text renderer added despite the stylesheet.
-
-#### New shortcuts
-
-| Shortcut | Action |
-| --- | --- |
-| `Shift + Space` | Jump to next peak |
-| `Ctrl + Shift + Space` | Jump to previous peak |
-| `L` | Toggle segment lock on all tracks |
+[Changelog] (CHANGELOG.md)
 
 ---
 

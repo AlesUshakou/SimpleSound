@@ -27,6 +27,11 @@ class TrackSegment:
     start: float
     end: float
     source_start: float = 0.0
+    # Cross-track audio reference: set when segment came from another track.
+    # None means use the owning track's audio_data / mipmaps / sample_rate.
+    source_audio: Optional[np.ndarray] = field(default=None, repr=False, compare=False)
+    source_mipmaps: Optional[Dict] = field(default=None, repr=False, compare=False)
+    source_sample_rate: Optional[int] = field(default=None, repr=False, compare=False)
 
     @property
     def duration(self) -> float:
@@ -35,6 +40,18 @@ class TrackSegment:
     @property
     def source_end(self) -> float:
         return self.source_start + self.duration
+
+    def effective_audio(self, track: 'TrackModel') -> Optional[np.ndarray]:
+        """Return audio data for this segment — own source or track's."""
+        return self.source_audio if self.source_audio is not None else track.audio_data
+
+    def effective_mipmaps(self, track: 'TrackModel') -> Dict:
+        """Return mipmaps for this segment — own source or track's."""
+        return self.source_mipmaps if self.source_mipmaps is not None else track.mipmaps
+
+    def effective_sample_rate(self, track: 'TrackModel') -> int:
+        """Return sample rate for this segment — own source or track's."""
+        return self.source_sample_rate if self.source_sample_rate is not None else track.sample_rate
 
 
 @dataclass
@@ -51,6 +68,7 @@ class TrackModel:
     duration: float
     solo: bool = False
     mute: bool = False
+    locked: bool = False
     meter_l: float = -60.0
     meter_r: float = -60.0
     meter_peak_l: float = -60.0
@@ -95,7 +113,13 @@ class TrackModel:
             source_start = max(0.0, float(getattr(s, 'source_start', start)))
             max_source_start = max(0.0, self.duration - (end - start))
             source_start = min(source_start, max_source_start)
-            cleaned.append(TrackSegment(start, end, source_start))
+            # Preserve cross-track audio references
+            cleaned.append(TrackSegment(
+                start, end, source_start,
+                source_audio=getattr(s, 'source_audio', None),
+                source_mipmaps=getattr(s, 'source_mipmaps', None),
+                source_sample_rate=getattr(s, 'source_sample_rate', None),
+            ))
         self.segments = sorted(cleaned, key=lambda s: s.start)
 
     def set_audio_data(self, audio: np.ndarray, sample_rate: int) -> None:
@@ -201,8 +225,14 @@ class TrackModel:
             if seg.start < time_pos < seg.end:
                 source_cut = seg.source_start + (time_pos - seg.start)
                 self.segments[i:i + 1] = [
-                    TrackSegment(seg.start, time_pos, seg.source_start),
-                    TrackSegment(time_pos, seg.end, source_cut),
+                    TrackSegment(seg.start, time_pos, seg.source_start,
+                                 source_audio=seg.source_audio,
+                                 source_mipmaps=seg.source_mipmaps,
+                                 source_sample_rate=seg.source_sample_rate),
+                    TrackSegment(time_pos, seg.end, source_cut,
+                                 source_audio=seg.source_audio,
+                                 source_mipmaps=seg.source_mipmaps,
+                                 source_sample_rate=seg.source_sample_rate),
                 ]
                 return True
         return False
@@ -220,10 +250,20 @@ class TrackModel:
             overlap_start = max(seg.start, start)
             overlap_end = min(seg.end, end)
             if seg.start < overlap_start:
-                new_segments.append(TrackSegment(seg.start, overlap_start, seg.source_start))
+                new_segments.append(TrackSegment(
+                    seg.start, overlap_start, seg.source_start,
+                    source_audio=seg.source_audio,
+                    source_mipmaps=seg.source_mipmaps,
+                    source_sample_rate=seg.source_sample_rate,
+                ))
             if seg.end > overlap_end:
                 right_source_start = seg.source_start + (overlap_end - seg.start)
-                new_segments.append(TrackSegment(overlap_end, seg.end, right_source_start))
+                new_segments.append(TrackSegment(
+                    overlap_end, seg.end, right_source_start,
+                    source_audio=seg.source_audio,
+                    source_mipmaps=seg.source_mipmaps,
+                    source_sample_rate=seg.source_sample_rate,
+                ))
         self.segments = [seg for seg in new_segments if seg.duration > 0.001]
         self.ensure_full_segment()
         self.automation_points = [p for p in self.automation_points if not (start < p.time < end)]
@@ -234,17 +274,90 @@ class TrackModel:
         if not (0 <= seg_index < len(self.segments)) or math.isclose(delta, 0.0, abs_tol=1e-6):
             return False
         seg = self.segments[seg_index]
-        new_seg = TrackSegment(seg.start + delta, seg.end + delta, seg.source_start)
-        if new_seg.start < 0.0 or new_seg.end > self.duration + 120.0:
-            return False
+        duration = seg.end - seg.start
+
+        # Clamp delta to avoid overlaps with neighbors and boundaries
+        min_start = 0.0
+        max_end = self.duration + 120.0
         for i, other in enumerate(self.segments):
             if i == seg_index:
                 continue
-            if new_seg.start < other.end - 0.001 and new_seg.end > other.start + 0.001:
-                return False
+            if other.end <= seg.start + 0.001:
+                # neighbor to the left — can't go further left than its end
+                min_start = max(min_start, other.end)
+            if other.start >= seg.end - 0.001:
+                # neighbor to the right — can't go further right than its start
+                max_end = min(max_end, other.start)
+
+        desired_start = seg.start + delta
+        clamped_start = max(min_start, min(desired_start, max_end - duration))
+        clamped_delta = clamped_start - seg.start
+
+        if math.isclose(clamped_delta, 0.0, abs_tol=1e-6):
+            return False
+
+        new_seg = TrackSegment(
+            seg.start + clamped_delta, seg.end + clamped_delta, seg.source_start,
+            source_audio=seg.source_audio,
+            source_mipmaps=seg.source_mipmaps,
+            source_sample_rate=seg.source_sample_rate,
+        )
         self.segments[seg_index] = new_seg
         self.segments.sort(key=lambda s: s.start)
         return True
+
+    def can_accept_segment(self, seg_start: float, seg_end: float, exclude_seg: Optional['TrackSegment'] = None) -> bool:
+        """Check if a segment of given time range can fit on this track without overlaps."""
+        seg_dur = seg_end - seg_start
+        if seg_dur <= 0:
+            return False
+        for existing in self.segments:
+            if exclude_seg is not None and existing is exclude_seg:
+                continue
+            if seg_start < existing.end - 0.001 and seg_end > existing.start + 0.001:
+                return False
+        return True
+
+    def find_nearest_gap(self, seg_start: float, seg_duration: float) -> Optional[float]:
+        """Find the nearest position where a segment of given duration can fit.
+        Returns the start time, or None if no gap exists."""
+        # Try the requested position first
+        if self.can_accept_segment(seg_start, seg_start + seg_duration):
+            return seg_start
+
+        # Collect all gaps between segments
+        sorted_segs = sorted(self.segments, key=lambda s: s.start)
+        gaps: List[Tuple[float, float]] = []
+        # Gap before first segment
+        if sorted_segs:
+            if sorted_segs[0].start >= seg_duration:
+                gaps.append((0.0, sorted_segs[0].start))
+        else:
+            return max(0.0, seg_start)  # No segments at all
+
+        # Gaps between segments
+        for i in range(len(sorted_segs) - 1):
+            gap_start = sorted_segs[i].end
+            gap_end = sorted_segs[i + 1].start
+            if gap_end - gap_start >= seg_duration - 0.001:
+                gaps.append((gap_start, gap_end))
+
+        # Gap after last segment
+        gaps.append((sorted_segs[-1].end, self.duration + 120.0))
+
+        # Find closest gap
+        best_pos: Optional[float] = None
+        best_dist = float('inf')
+        for gap_start, gap_end in gaps:
+            if gap_end - gap_start < seg_duration - 0.001:
+                continue
+            # Clamp desired position within this gap
+            clamped = max(gap_start, min(seg_start, gap_end - seg_duration))
+            dist = abs(clamped - seg_start)
+            if dist < best_dist:
+                best_dist = dist
+                best_pos = clamped
+        return best_pos
 
     def trim_segment(self, seg_index: int, edge: str, new_time: float) -> bool:
         if not (0 <= seg_index < len(self.segments)):
@@ -260,14 +373,24 @@ class TrackModel:
                 return False
             seg.source_start += (new_start - seg.start)
             seg.start = new_start
-            self.segments[seg_index] = TrackSegment(seg.start, seg.end, seg.source_start)
+            self.segments[seg_index] = TrackSegment(
+                seg.start, seg.end, seg.source_start,
+                source_audio=seg.source_audio,
+                source_mipmaps=seg.source_mipmaps,
+                source_sample_rate=seg.source_sample_rate,
+            )
             return True
         if edge == 'right':
             latest_by_source = seg.start + (self.duration - seg.source_start)
             new_end = min(next_start, latest_by_source, max(float(new_time), seg.start + min_dur))
             if math.isclose(new_end, seg.end, abs_tol=1e-6):
                 return False
-            self.segments[seg_index] = TrackSegment(seg.start, new_end, seg.source_start)
+            self.segments[seg_index] = TrackSegment(
+                seg.start, new_end, seg.source_start,
+                source_audio=seg.source_audio,
+                source_mipmaps=seg.source_mipmaps,
+                source_sample_rate=seg.source_sample_rate,
+            )
             return True
         return False
 
@@ -287,14 +410,25 @@ class TrackModel:
                 overlap_start + delta,
                 overlap_end + delta,
                 seg.source_start + (overlap_start - seg.start),
+                source_audio=seg.source_audio,
+                source_mipmaps=seg.source_mipmaps,
+                source_sample_rate=seg.source_sample_rate,
             ))
             changed = True
             if seg.start < overlap_start:
-                untouched_segments.append(TrackSegment(seg.start, overlap_start, seg.source_start))
+                untouched_segments.append(TrackSegment(
+                    seg.start, overlap_start, seg.source_start,
+                    source_audio=seg.source_audio,
+                    source_mipmaps=seg.source_mipmaps,
+                    source_sample_rate=seg.source_sample_rate,
+                ))
             if seg.end > overlap_end:
                 untouched_segments.append(TrackSegment(
                     overlap_end, seg.end,
                     seg.source_start + (overlap_end - seg.start),
+                    source_audio=seg.source_audio,
+                    source_mipmaps=seg.source_mipmaps,
+                    source_sample_rate=seg.source_sample_rate,
                 ))
         if not changed or any(seg.start < 0.0 for seg in selected_segments):
             return False
@@ -337,7 +471,12 @@ class TrackModel:
             nxt = self.segments[i]
             if math.isclose(curr.end, nxt.start, abs_tol=1e-4) and \
                math.isclose(curr.source_start + curr.duration, nxt.source_start, abs_tol=1e-4):
-                curr = TrackSegment(curr.start, nxt.end, curr.source_start)
+                curr = TrackSegment(
+                    curr.start, nxt.end, curr.source_start,
+                    source_audio=curr.source_audio,
+                    source_mipmaps=curr.source_mipmaps,
+                    source_sample_rate=curr.source_sample_rate,
+                )
             else:
                 merged.append(curr)
                 curr = nxt
@@ -369,9 +508,9 @@ class ProjectModel:
     selected_point: Optional[Tuple[int, int]] = None
     selected_segment: Optional[Tuple[int, int]] = None
     selected_segments: List[Tuple[int, int]] = field(default_factory=list)
+    selected_gap: Optional[Tuple[int, int, int]] = None  # (track_index, left_seg_idx, right_seg_idx)
     playhead_time: float = 0.0
     playing: bool = False
-    selection_range: Optional[Tuple[float, float]] = None
     loop_range: Optional[Tuple[float, float]] = None
     play_range_start: float = 0.0
     play_range_end: Optional[float] = None

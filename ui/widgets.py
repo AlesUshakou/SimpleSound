@@ -191,19 +191,17 @@ class HorizontalMeter(QWidget):
 # ---------- Track header row ----------
 
 class TrackHeaderRow(QFrame):
-    remove_requested = Signal(int)
     solo_requested = Signal(int)
     mute_requested = Signal(int)
     reset_automation_requested = Signal(int)
     select_requested = Signal(int)
-    lock_toggled = Signal(bool)  # глобальный тумблер — шлём новое состояние
+    lock_toggled = Signal(int, bool)  # per-track: (track_index, locked)
 
     def __init__(self, track_index: int, track: TrackModel, row_height: int = 128,
-                 segments_locked: bool = True, parent: Optional[QWidget] = None):
+                 parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.track_index = track_index
         self.track = track
-        self.segments_locked = segments_locked
         self.setObjectName('TrackHeaderRow')
         self.setFixedHeight(row_height)
         self.setMinimumWidth(250)
@@ -227,23 +225,19 @@ class TrackHeaderRow(QFrame):
         self.btn_reset = QPushButton('A')
         self.btn_lock = QPushButton()
         self.btn_lock.setCheckable(True)
-        self.btn_lock.setChecked(segments_locked)
-        self.btn_delete = QPushButton('✕')
+        self.btn_lock.setChecked(track.locked)
         self.btn_solo.setToolTip('Solo track')
         self.btn_mute.setToolTip('Mute track')
         self.btn_reset.setToolTip('Reset automation')
         self._refresh_lock_visuals()
-        self.btn_delete.setToolTip('Delete track')
-        for btn in (self.btn_solo, self.btn_mute, self.btn_reset, self.btn_lock, self.btn_delete):
+        for btn in (self.btn_solo, self.btn_mute, self.btn_reset, self.btn_lock):
             btn.setFixedSize(30, 30)
             btn.setCursor(Qt.PointingHandCursor)
         self.btn_solo.clicked.connect(lambda: self.solo_requested.emit(self.track_index))
         self.btn_mute.clicked.connect(lambda: self.mute_requested.emit(self.track_index))
         self.btn_reset.clicked.connect(lambda: self.reset_automation_requested.emit(self.track_index))
         self.btn_lock.clicked.connect(self._on_lock_clicked)
-        self.btn_delete.clicked.connect(lambda: self.remove_requested.emit(self.track_index))
-        # Порядок: S, M, A, Lock, ✕
-        for btn in (self.btn_solo, self.btn_mute, self.btn_reset, self.btn_lock, self.btn_delete):
+        for btn in (self.btn_solo, self.btn_mute, self.btn_reset, self.btn_lock):
             top.addWidget(btn)
         layout.addLayout(top)
 
@@ -255,32 +249,30 @@ class TrackHeaderRow(QFrame):
         layout.addWidget(self.meter)
         self.refresh()
 
-    def set_segments_locked(self, locked: bool) -> None:
-        self.segments_locked = bool(locked)
+    def set_track_locked(self, locked: bool) -> None:
         self.btn_lock.blockSignals(True)
-        self.btn_lock.setChecked(self.segments_locked)
+        self.btn_lock.setChecked(locked)
         self.btn_lock.blockSignals(False)
         self._refresh_lock_visuals()
 
     def _on_lock_clicked(self) -> None:
-        self.segments_locked = self.btn_lock.isChecked()
+        locked = self.btn_lock.isChecked()
         self._refresh_lock_visuals()
-        self.lock_toggled.emit(self.segments_locked)
+        self.lock_toggled.emit(self.track_index, locked)
 
     def _refresh_lock_visuals(self) -> None:
-        if self.segments_locked:
+        locked = self.btn_lock.isChecked()
+        if locked:
             self.btn_lock.setIcon(make_svg_icon(SVG_LOCK_CLOSED, '#FF8A3D', 18))
             self.btn_lock.setToolTip(
-                'Segments locked — click to unlock.\n'
-                'Shortcut: L\n'
+                'Track locked — click to unlock.\n'
                 'Locked: segments cannot be moved, trimmed or dragged.\n'
                 'Unlocked: drag segment body to move, drag edges to trim.'
             )
         else:
             self.btn_lock.setIcon(make_svg_icon(SVG_LOCK_OPEN, '#EAECEF', 18))
             self.btn_lock.setToolTip(
-                'Segments unlocked — click to lock.\n'
-                'Shortcut: L\n'
+                'Track unlocked — click to lock.\n'
                 'Unlocked: drag segment body to move, drag edges to trim.'
             )
         self.btn_lock.setIconSize(QSize(18, 18))
@@ -289,8 +281,7 @@ class TrackHeaderRow(QFrame):
         self.btn_solo.setStyleSheet(self._button_style(self.track.solo, '#FF8A3D'))
         self.btn_mute.setStyleSheet(self._button_style(self.track.mute, '#8894A7'))
         self.btn_reset.setStyleSheet(self._button_style(False, '#8894A7'))
-        self.btn_lock.setStyleSheet(self._button_style(self.segments_locked, '#FF8A3D'))
-        self.btn_delete.setStyleSheet(self._button_style(False, '#E05F5F'))
+        self.btn_lock.setStyleSheet(self._button_style(self.track.locked, '#FF8A3D'))
         self.meter.set_levels(
             self.track.meter_l, self.track.meter_r,
             self.track.meter_peak_l, self.track.meter_peak_r,
@@ -325,21 +316,84 @@ class TrackHeaderPanel(QWidget):
     mute_requested = Signal(int)
     reset_automation_requested = Signal(int)
     select_requested = Signal(int)
-    lock_toggled = Signal(bool)
+    lock_toggled = Signal(int, bool)  # per-track: (track_index, locked)
+    track_reorder_requested = Signal(int, int)  # from_index, to_index
+    add_empty_track_requested = Signal()
+    remove_selected_track_requested = Signal()
+
+    # SVG icons for toolbar
+    SVG_ADD_TRACK = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="{c}" stroke-width="2" stroke-linecap="round">
+<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>'''
+
+    SVG_DELETE_TRACK = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="{c}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+<polyline points="3 6 5 6 21 6"/>
+<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+<line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>'''
+
+    TOOLBAR_BTN_STYLE = (
+        'QToolButton {'
+        '  background: #252A34;'
+        '  border: 1px solid #3C4452;'
+        '  border-radius: 7px;'
+        '  color: #EAECEF;'
+        '}'
+        'QToolButton:hover {'
+        '  background: #333B47;'
+        '  border: 1px solid #FF8A3D;'
+        '}'
+        'QToolButton:pressed {'
+        '  background: #1A1E26;'
+        '}'
+    )
 
     def __init__(self, project: ProjectModel, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.project = project
         self.row_height = 128
-        self.segments_locked = True
+        self._drag_source_index: Optional[int] = None
+        self._drag_start_pos: Optional[QPointF] = None
+        self._drag_indicator_index: Optional[int] = None
         self.setFixedWidth(250)
         self.layout_main = QVBoxLayout(self)
         self.layout_main.setContentsMargins(0, 0, 0, 0)
         self.layout_main.setSpacing(0)
-        # Spacer — только если есть треки (линейка таймлайна появляется только с ними)
-        self.ruler_spacer = QWidget()
-        self.ruler_spacer.setFixedHeight(38)
-        self.layout_main.addWidget(self.ruler_spacer)
+
+        # Toolbar: Add Track + Delete Selected Track
+        self.toolbar = QWidget()
+        self.toolbar.setFixedHeight(38)
+        self.toolbar.setStyleSheet('background: #1C2028; border-bottom: 1px solid #303643;')
+        tb_layout = QHBoxLayout(self.toolbar)
+        tb_layout.setContentsMargins(8, 4, 8, 4)
+        tb_layout.setSpacing(6)
+
+        self.btn_add_track = QToolButton()
+        self.btn_add_track.setFixedSize(30, 28)
+        self.btn_add_track.setCursor(Qt.PointingHandCursor)
+        self.btn_add_track.setToolTip('Add empty track')
+        self.btn_add_track.setIcon(make_svg_icon(self.SVG_ADD_TRACK, '#FF8A3D', 18))
+        self.btn_add_track.setIconSize(QSize(18, 18))
+        self.btn_add_track.setStyleSheet(self.TOOLBAR_BTN_STYLE)
+        self.btn_add_track.clicked.connect(lambda: self.add_empty_track_requested.emit())
+
+        self.btn_remove_track = QToolButton()
+        self.btn_remove_track.setFixedSize(30, 28)
+        self.btn_remove_track.setCursor(Qt.PointingHandCursor)
+        self.btn_remove_track.setToolTip('Delete selected track')
+        self.btn_remove_track.setIcon(make_svg_icon(self.SVG_DELETE_TRACK, '#E05F5F', 18))
+        self.btn_remove_track.setIconSize(QSize(18, 18))
+        self.btn_remove_track.setStyleSheet(self.TOOLBAR_BTN_STYLE)
+        self.btn_remove_track.clicked.connect(lambda: self.remove_selected_track_requested.emit())
+
+        tb_label = QLabel('Tracks')
+        tb_label.setStyleSheet('color: #9BA6B2; font-weight: 700; font-size: 11px; background: transparent; border: none;')
+
+        tb_layout.addWidget(tb_label)
+        tb_layout.addStretch(1)
+        tb_layout.addWidget(self.btn_add_track)
+        tb_layout.addWidget(self.btn_remove_track)
+
+        self.layout_main.addWidget(self.toolbar)
+
         self.empty_label = QLabel('No tracks loaded')
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setStyleSheet('color:#7F8A98;font-size:13px;font-weight:600;padding:24px 12px;')
@@ -351,11 +405,91 @@ class TrackHeaderPanel(QWidget):
         self.layout_main.addWidget(self.rows_container, 0, Qt.AlignTop)
         self.layout_main.addStretch(1)
         self.rows: List[TrackHeaderRow] = []
+        self.setMouseTracking(True)
 
-    def set_segments_locked(self, locked: bool) -> None:
-        self.segments_locked = bool(locked)
-        for row in self.rows:
-            row.set_segments_locked(self.segments_locked)
+    # --- Drag-to-reorder tracks ---
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            idx = self._row_index_at_y(event.position().y())
+            if idx is not None and 0 <= idx < len(self.project.tracks) and not self.project.tracks[idx].locked:
+                self._drag_start_pos = event.position()
+                self._drag_source_index = idx
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if (
+            self._drag_source_index is not None
+            and self._drag_start_pos is not None
+        ):
+            delta = (event.position() - self._drag_start_pos).manhattanLength()
+            if delta > 8:
+                target = self._row_index_at_y(event.position().y())
+                if target is not None and target != self._drag_indicator_index:
+                    self._drag_indicator_index = target
+                    self._update_drag_indicator()
+                self.setCursor(Qt.ClosedHandCursor)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._drag_source_index is not None:
+            target = self._row_index_at_y(event.position().y())
+            if target is not None and target != self._drag_source_index:
+                self.track_reorder_requested.emit(self._drag_source_index, target)
+        self._drag_source_index = None
+        self._drag_start_pos = None
+        self._drag_indicator_index = None
+        self._clear_drag_indicator()
+        self.unsetCursor()
+        super().mouseReleaseEvent(event)
+
+    def _row_index_at_y(self, y: float) -> Optional[int]:
+        toolbar_h = self.toolbar.height() if self.toolbar.isVisible() else 0
+        rel_y = y - toolbar_h
+        if rel_y < 0:
+            return 0 if self.rows else None
+        idx = int(rel_y / max(1, self.row_height))
+        if idx >= len(self.rows):
+            return len(self.rows) - 1 if self.rows else None
+        return idx
+
+    def _update_drag_indicator(self) -> None:
+        for i, row in enumerate(self.rows):
+            if i == self._drag_indicator_index and i != self._drag_source_index:
+                row.setStyleSheet(self._row_style_drag_target())
+            elif i == self._drag_source_index:
+                row.setStyleSheet(self._row_style_drag_source())
+            else:
+                track = self.project.tracks[i]
+                row.setStyleSheet(self._row_style(self.project.selected_track == i, track.solo))
+
+    def _clear_drag_indicator(self) -> None:
+        for i, row in enumerate(self.rows):
+            if i < len(self.project.tracks):
+                track = self.project.tracks[i]
+                row.setStyleSheet(self._row_style(self.project.selected_track == i, track.solo))
+
+    @staticmethod
+    def _row_style_drag_target() -> str:
+        return '''
+            QFrame#TrackHeaderRow {
+                background: #2A3240;
+                border: 2px solid #FF8A3D;
+            }
+        '''
+
+    @staticmethod
+    def _row_style_drag_source() -> str:
+        return '''
+            QFrame#TrackHeaderRow {
+                background: #1A1E26;
+                border: 1px dashed #4A5260;
+            }
+        '''
+
+    def set_track_locked(self, track_index: int, locked: bool) -> None:
+        if 0 <= track_index < len(self.rows):
+            self.rows[track_index].set_track_locked(locked)
 
     def set_row_height(self, value: int) -> None:
         self.row_height = value
@@ -367,8 +501,6 @@ class TrackHeaderPanel(QWidget):
         total_height = 0 if not self.rows else len(self.rows) * self.row_height + max(0, len(self.rows) - 1)
         self.rows_container.setFixedHeight(total_height)
         self.empty_label.setVisible(not self.rows)
-        # Когда треков нет — линейки на канвасе тоже нет, убираем spacer
-        self.ruler_spacer.setVisible(bool(self.rows))
 
     def rebuild(self) -> None:
         while self.rows_layout.count():
@@ -378,8 +510,7 @@ class TrackHeaderPanel(QWidget):
                 widget.deleteLater()
         self.rows.clear()
         for i, track in enumerate(self.project.tracks):
-            row = TrackHeaderRow(i, track, self.row_height, self.segments_locked)
-            row.remove_requested.connect(self.remove_requested)
+            row = TrackHeaderRow(i, track, self.row_height)
             row.solo_requested.connect(self.solo_requested)
             row.mute_requested.connect(self.mute_requested)
             row.reset_automation_requested.connect(self.reset_automation_requested)
@@ -401,7 +532,7 @@ class TrackHeaderPanel(QWidget):
             row.num_label.setText(str(track.track_id))
             row.name_label.setText(track.name)
             row.file_label.setText(os.path.basename(track.file_path) if track.file_path else 'Empty Track')
-            row.set_segments_locked(self.segments_locked)
+            row.set_track_locked(track.locked)
             row.setStyleSheet(self._row_style(self.project.selected_track == i, track.solo))
             row.refresh()
 

@@ -30,7 +30,6 @@ from core.models import (
     TARGET_SAMPLE_RATE,
     TARGET_SAMPLE_WIDTH,
     AutomationPoint,
-    ClipboardPayload,
     HistoryStack,
     ProjectModel,
     TrackModel,
@@ -48,7 +47,7 @@ class MainWindow(QMainWindow):
         self.project = ProjectModel()
         self.history = HistoryStack()
         self._restoring_history = False
-        self.clipboard_payload = ClipboardPayload()
+        self._project_dirty = False
         self.loader_thread: Optional[QThread] = None
         self.loader_worker: Optional[AudioFileLoader] = None
         self.progress_dialog: Optional[QProgressDialog] = None
@@ -59,6 +58,7 @@ class MainWindow(QMainWindow):
         self.resize(1720, 940)
         self.setMinimumSize(1320, 760)
         self.setStyleSheet('QMainWindow{background:#181A1F;}')
+        self.setAcceptDrops(True)
         self._build_ui()
         app = QApplication.instance()
         if app is not None:
@@ -72,11 +72,10 @@ class MainWindow(QMainWindow):
         self.audio_poll_timer.timeout.connect(self._poll_audio_engine)
         self._init_audio_backend()
         self._drop_placeholder_tracks()
-        # Применяем стартовое состояние lock (по умолчанию заблокировано)
-        self.canvas.set_segments_locked(True)
-        self.header_panel.set_segments_locked(True)
+        # Per-track lock is managed via TrackModel.locked (default=True)
         self._sync_ui(True)
         self.record_history()
+        self._project_dirty = False  # Initial empty project is not dirty
 
     # --------- UI ---------
 
@@ -198,6 +197,8 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu('File')
         edit_menu = self.menuBar().addMenu('Edit')
         help_menu = self.menuBar().addMenu('Help')
+        self.act_new_project = QAction('New Project', self)
+        self.act_new_project.setShortcut(QKeySequence('Ctrl+N'))
         self.act_open_tracks = QAction('Open Tracks...', self)
         self.act_open_tracks.setShortcut(QKeySequence.Open)
         self.act_open_project = QAction('Open Project...', self)
@@ -206,8 +207,13 @@ class MainWindow(QMainWindow):
         self.act_save_project.setShortcut(QKeySequence.Save)
         self.act_save_project_as = QAction('Save Project As...', self)
         self.act_save_project_as.setShortcut(QKeySequence('Ctrl+Shift+S'))
+        file_menu.addAction(self.act_new_project)
+        file_menu.addSeparator()
         file_menu.addAction(self.act_open_tracks)
         file_menu.addAction(self.act_open_project)
+        file_menu.addSeparator()
+        self.recent_menu = file_menu.addMenu('Recent Projects')
+        self._rebuild_recent_menu()
         file_menu.addSeparator()
         file_menu.addAction(self.act_save_project)
         file_menu.addAction(self.act_save_project_as)
@@ -218,12 +224,6 @@ class MainWindow(QMainWindow):
         self.act_redo = QAction('Redo', self)
         self.act_redo.setShortcut(QKeySequence('Ctrl+Shift+Z'))
         self.act_redo.setShortcutContext(Qt.ApplicationShortcut)
-        self.act_copy = QAction('Copy', self)
-        self.act_copy.setShortcut(QKeySequence.Copy)
-        self.act_copy.setShortcutContext(Qt.ApplicationShortcut)
-        self.act_paste = QAction('Paste', self)
-        self.act_paste.setShortcut(QKeySequence.Paste)
-        self.act_paste.setShortcutContext(Qt.ApplicationShortcut)
         self.act_delete = QAction('Delete', self)
         self.act_delete.setShortcut(QKeySequence.Delete)
         self.act_delete.setShortcutContext(Qt.ApplicationShortcut)
@@ -236,8 +236,6 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.act_undo)
         edit_menu.addAction(self.act_redo)
         edit_menu.addSeparator()
-        edit_menu.addAction(self.act_copy)
-        edit_menu.addAction(self.act_paste)
         edit_menu.addAction(self.act_delete)
         edit_menu.addAction(self.act_merge)
         edit_menu.addSeparator()
@@ -254,32 +252,34 @@ class MainWindow(QMainWindow):
         self.act_about.triggered.connect(self.show_about_dialog)
         help_menu.addAction(self.act_about)
 
+        self.act_new_project.triggered.connect(self.new_project)
         self.act_open_tracks.triggered.connect(self.open_files)
         self.act_open_project.triggered.connect(self.open_project_dialog)
         self.act_save_project.triggered.connect(self.save_project)
         self.act_save_project_as.triggered.connect(self.save_project_as)
         self.act_undo.triggered.connect(self.undo)
         self.act_redo.triggered.connect(self.redo)
-        self.act_copy.triggered.connect(self.copy_clipboard)
-        self.act_paste.triggered.connect(self.paste_clipboard)
         self.act_delete.triggered.connect(self.canvas.delete_selected)
         self.act_merge.triggered.connect(self.merge_selected_segments)
         self.act_toggle_lock.triggered.connect(self.toggle_segments_lock)
 
     def _connect_signals(self) -> None:
-        self.header_panel.remove_requested.connect(self.remove_track)
         self.header_panel.solo_requested.connect(self.toggle_solo)
         self.header_panel.mute_requested.connect(self.toggle_mute)
         self.header_panel.reset_automation_requested.connect(self.clear_automation)
         self.header_panel.select_requested.connect(self.select_track)
-        self.header_panel.lock_toggled.connect(self.set_segments_locked)
+        self.header_panel.lock_toggled.connect(self.set_track_locked)
+        self.header_panel.track_reorder_requested.connect(self.reorder_tracks)
+        self.header_panel.add_empty_track_requested.connect(self.add_empty_track)
+        self.header_panel.remove_selected_track_requested.connect(self.remove_selected_track)
 
         self.canvas.project_changed.connect(lambda: self._sync_ui(False))
-        self.canvas.selection_changed.connect(lambda: self._sync_ui(False))
         self.canvas.playhead_clicked.connect(self.seek_playhead)
         self.canvas.track_selected.connect(self.select_track)
         self.canvas.status_changed.connect(self.status_label.setText)
         self.canvas.mutation_started.connect(self.record_history)
+        self.canvas.files_dropped.connect(self._load_tracks_with_progress)
+        self.canvas.audio_mix_changed.connect(self._refresh_audio_mix)
 
         self.bottom_bar.jump_start_requested.connect(self.jump_to_start)
         self.bottom_bar.play_pause_requested.connect(self.toggle_play_pause)
@@ -332,14 +332,21 @@ class MainWindow(QMainWindow):
 
     # --------- Segments lock ---------
 
-    def set_segments_locked(self, locked: bool) -> None:
-        locked = bool(locked)
-        self.canvas.set_segments_locked(locked)
-        self.header_panel.set_segments_locked(locked)
-        self.status_label.setText('Segments locked' if locked else 'Segments unlocked')
+    def set_track_locked(self, track_index: int, locked: bool) -> None:
+        if not (0 <= track_index < len(self.project.tracks)):
+            return
+        self.project.tracks[track_index].locked = bool(locked)
+        self.header_panel.set_track_locked(track_index, locked)
+        self.canvas.update()
+        name = self.project.tracks[track_index].name
+        self.status_label.setText(f'{name}: {"locked" if locked else "unlocked"}')
 
     def toggle_segments_lock(self) -> None:
-        self.set_segments_locked(not self.canvas.segments_locked)
+        """L shortcut toggles the selected track's lock."""
+        idx = self.project.selected_track
+        if idx is not None and 0 <= idx < len(self.project.tracks):
+            new_state = not self.project.tracks[idx].locked
+            self.set_track_locked(idx, new_state)
 
     # --------- Peak navigation ---------
 
@@ -348,7 +355,7 @@ class MainWindow(QMainWindow):
         if t is None:
             self.status_label.setText('No peak found ahead')
             return
-        self.set_playhead(t, preserve_selection=False)
+        self.set_playhead(t)
         self.scroll_timeline_to_time(t, align='center')
         self.status_label.setText(f'Jumped to next peak: {t:.3f}s')
 
@@ -357,7 +364,7 @@ class MainWindow(QMainWindow):
         if t is None:
             self.status_label.setText('No peak found behind')
             return
-        self.set_playhead(t, preserve_selection=False)
+        self.set_playhead(t)
         self.scroll_timeline_to_time(t, align='center')
         self.status_label.setText(f'Jumped to previous peak: {t:.3f}s')
 
@@ -386,6 +393,7 @@ class MainWindow(QMainWindow):
     def record_history(self) -> None:
         if self._restoring_history:
             return
+        self._project_dirty = True
         self.history.record(self.project_to_dict(include_audio=False))
 
     def undo(self) -> None:
@@ -393,8 +401,10 @@ class MainWindow(QMainWindow):
         if state is None:
             self.status_label.setText('Nothing to undo')
             return
+        current_playhead = self.project.playhead_time
         self.stop_playback()
         self._restore_project_from_dict(state)
+        self.project.playhead_time = current_playhead
         self.status_label.setText('Undo')
 
     def redo(self) -> None:
@@ -402,21 +412,25 @@ class MainWindow(QMainWindow):
         if state is None:
             self.status_label.setText('Nothing to redo')
             return
+        current_playhead = self.project.playhead_time
         self.stop_playback()
         self._restore_project_from_dict(state)
+        self.project.playhead_time = current_playhead
         self.status_label.setText('Redo')
 
     # --------- Track sanitation ---------
 
     def _prune_placeholder_tracks(self) -> bool:
+        # Only prune tracks that have a file_path set but no audio loaded (failed loads)
         kept_tracks: List[TrackModel] = []
         removed = False
         for track in self.project.tracks:
             has_audio = track.audio_data is not None and getattr(track.audio_data, 'size', 0) > 0
             has_file = bool(track.file_path)
-            has_duration = track.duration > 0.001
-            if has_audio or (has_file and has_duration):
-                track.ensure_full_segment()
+            is_empty_intentional = not has_file  # Empty tracks added by user have no file_path
+            if has_audio or is_empty_intentional or (has_file and track.duration > 0.001):
+                if track.duration > 0:
+                    track.ensure_full_segment()
                 kept_tracks.append(track)
             else:
                 removed = True
@@ -438,9 +452,12 @@ class MainWindow(QMainWindow):
         cleaned: List[TrackModel] = []
         for track in self.project.tracks:
             has_audio = track.audio_data is not None and track.audio_data.size > 0
-            has_content = has_audio or (bool(track.file_path) and track.duration > 0.01)
+            has_file = bool(track.file_path)
+            is_empty_intentional = not has_file
+            has_content = has_audio or is_empty_intentional or (has_file and track.duration > 0.01)
             if has_content:
-                track.ensure_full_segment()
+                if track.duration > 0:
+                    track.ensure_full_segment()
                 cleaned.append(track)
         self.project.tracks = cleaned
         for i, track in enumerate(self.project.tracks, start=1):
@@ -450,7 +467,6 @@ class MainWindow(QMainWindow):
             self.project.selected_track = None
             self.project.selected_segment = None
             self.project.selected_segments = []
-            self.project.selection_range = None
         elif self.project.selected_track is None or self.project.selected_track >= len(self.project.tracks):
             self.project.selected_track = min(len(self.project.tracks) - 1, 0)
 
@@ -489,7 +505,6 @@ class MainWindow(QMainWindow):
         try:
             project = ProjectModel()
             project.playhead_time = float(data.get('playhead_time', 0.0))
-            project.selection_range = tuple(data.get('selection_range')) if data.get('selection_range') else None
             project.loop_range = tuple(data.get('loop_range')) if data.get('loop_range') else None
             project.play_range_start = float(data.get('play_range_start', 0.0))
             project.play_range_end = data.get('play_range_end')
@@ -506,6 +521,7 @@ class MainWindow(QMainWindow):
                     duration=float(item.get('duration', 0.0)),
                     solo=bool(item.get('solo', False)),
                     mute=bool(item.get('mute', False)),
+                    locked=bool(item.get('locked', True)),
                     automation_points=[AutomationPoint(**p) for p in item.get('automation_points', [])],
                     segments=[TrackSegment(**s) for s in item.get('segments', [])],
                 )
@@ -527,7 +543,13 @@ class MainWindow(QMainWindow):
                     track.waveform_peaks = item.get('waveform_peaks')
                     track.waveform_peak_resolution = int(item.get('waveform_peak_resolution', 0))
                 track.segments = [
-                    TrackSegment(max(0.0, s.start), min(track.duration + 120.0, s.end), getattr(s, 'source_start', s.start))
+                    TrackSegment(
+                        max(0.0, s.start), min(track.duration + 120.0, s.end),
+                        getattr(s, 'source_start', s.start),
+                        source_audio=getattr(s, 'source_audio', None),
+                        source_mipmaps=getattr(s, 'source_mipmaps', None),
+                        source_sample_rate=getattr(s, 'source_sample_rate', None),
+                    )
                     for s in track.segments
                 ] or [TrackSegment(0.0, track.duration, 0.0)]
                 track.ensure_full_segment()
@@ -607,7 +629,6 @@ class MainWindow(QMainWindow):
             self.project.selected_track = None
             self.project.selected_segment = None
             self.project.selected_segments = []
-            self.project.selection_range = None
         for track in self.project.tracks:
             track.ensure_full_segment()
         self.bottom_bar.update_time(self.project.playhead_time)
@@ -702,16 +723,10 @@ class MainWindow(QMainWindow):
 
     # --------- Playhead control ---------
 
-    def set_playhead(self, value: float, preserve_selection: bool = False) -> None:
+    def set_playhead(self, value: float) -> None:
         total_duration = self.project.duration()
         value = max(0.0, min(float(value), total_duration))
-        if preserve_selection and self.project.selection_range:
-            sel_start, sel_end = self.project.selection_range
-            if value < sel_start or value >= sel_end:
-                value = sel_start
-            end = sel_end
-        else:
-            end = total_duration
+        end = total_duration
         self.project.playhead_time = value
         self.bottom_bar.update_time(value)
         self.canvas.update()
@@ -720,76 +735,20 @@ class MainWindow(QMainWindow):
             self.play_start_anchor = value
             self.project.play_range_start = value
             self.project.play_range_end = end
-            self.audio_engine.play(value, end, bool(preserve_selection and self.project.selection_range))
+            self.audio_engine.play(value, end, False)
             self.audio_poll_timer.start()
 
     def seek_playhead(self, value: float) -> None:
-        self.set_playhead(value, preserve_selection=True)
+        self.set_playhead(value)
 
     def jump_to_start(self) -> None:
-        self.set_playhead(0.0, preserve_selection=False)
+        self.set_playhead(0.0)
         self.scroll_timeline_to_time(0.0, align='left')
 
     def jump_to_end(self) -> None:
         end_time = self.project.duration()
-        self.set_playhead(end_time, preserve_selection=False)
+        self.set_playhead(end_time)
         self.scroll_timeline_to_time(end_time, align='right')
-
-    # --------- Clipboard ---------
-
-    def _track_payload_source(self) -> Optional[Tuple[int, ClipboardPayload]]:
-        if self.project.selected_track is None:
-            return None
-        track_index = self.project.selected_track
-        track = self.project.tracks[track_index]
-        if self.project.selection_range:
-            start, end = self.project.selection_range
-            copied: List[TrackSegment] = []
-            for seg in track.segments:
-                overlap_start = max(seg.start, start)
-                overlap_end = min(seg.end, end)
-                if overlap_end > overlap_start:
-                    copied.append(TrackSegment(overlap_start, overlap_end))
-            if copied:
-                return track_index, ClipboardPayload(duration=end - start, segments=copied)
-        if self.project.selected_segment and self.project.selected_segment[0] == track_index:
-            seg = track.segments[self.project.selected_segment[1]]
-            return track_index, ClipboardPayload(duration=seg.duration, segments=[TrackSegment(seg.start, seg.end)])
-        return None
-
-    def copy_clipboard(self) -> None:
-        src = self._track_payload_source()
-        if not src:
-            self.status_label.setText('Nothing to copy')
-            return
-        _, payload = src
-        self.clipboard_payload = ClipboardPayload(
-            payload.duration,
-            [TrackSegment(s.start, s.end) for s in payload.segments],
-        )
-        self.status_label.setText(f'Copied {len(payload.segments)} segment(s)')
-
-    def paste_clipboard(self) -> None:
-        if self.project.selected_track is None or not self.clipboard_payload.segments:
-            self.status_label.setText('Nothing to paste')
-            return
-        self.record_history()
-        track = self.project.tracks[self.project.selected_track]
-        insert_time = self.project.playhead_time
-        payload = self.clipboard_payload
-        offset = payload.segments[0].start
-        new_segments = [
-            TrackSegment(insert_time + (s.start - offset), insert_time + (s.end - offset))
-            for s in payload.segments
-        ]
-        for moved in new_segments:
-            for seg in track.segments:
-                if moved.start < seg.end - 0.001 and moved.end > seg.start + 0.001:
-                    self.status_label.setText('Paste blocked: overlaps another segment')
-                    return
-        track.segments.extend(new_segments)
-        track.segments.sort(key=lambda s: s.start)
-        self._sync_ui(True)
 
     # --------- Edit ops ---------
 
@@ -819,14 +778,38 @@ class MainWindow(QMainWindow):
             self.project.selected_track = track_index
             self.project.selected_segment = None
             self.project.selected_segments = []
-            self.project.selection_range = None
             self._sync_ui(True)
             self.status_label.setText(f'Cut at {cut_time:.3f}s: {track.name}')
 
     def merge_selected_segments(self) -> None:
+        # First check if a gap is selected — close the gap
+        gap = self.project.selected_gap
+        if gap is not None:
+            track_idx, left_idx, right_idx = gap
+            if 0 <= track_idx < len(self.project.tracks) and left_idx >= 0 and right_idx >= 0:
+                track = self.project.tracks[track_idx]
+                if left_idx < len(track.segments) and right_idx < len(track.segments):
+                    left_seg = track.segments[left_idx]
+                    right_seg = track.segments[right_idx]
+                    gap_size = right_seg.start - left_seg.end
+                    if gap_size > 0.001:
+                        self.record_history()
+                        # Slide the right segment to close the gap
+                        right_seg.start -= gap_size
+                        right_seg.end -= gap_size
+                        track.segments.sort(key=lambda s: s.start)
+                        track.ensure_full_segment()
+                        self.project.selected_gap = None
+                        self._sync_ui(True)
+                        self.status_label.setText(f'Gap closed on {track.name}')
+                        return
+            self.status_label.setText('Cannot close this gap')
+            return
+
+        # Otherwise try to merge selected segments
         before = self.canvas._mergeable_selected_segments()
         if len(before) < 2:
-            self.status_label.setText('Select 2+ segments on the same track to merge')
+            self.status_label.setText('Select 2+ segments on the same track to merge, or click a gap')
             return
         self.canvas.merge_selected_segments()
         self._sync_ui(True)
@@ -842,9 +825,9 @@ class MainWindow(QMainWindow):
         self.project.selected_point = None
         self.project.selected_segment = None
         self.project.selected_segments = []
-        self.project.selection_range = None
         self._refresh_audio_mix()
         self._sync_ui(False)
+        self.canvas.update()  # Force full repaint so track highlight is visible immediately
         self.status_label.setText('Solo cleared' if only_this_track else f'Solo: Track {index + 1}')
 
     # --------- File loading ---------
@@ -908,7 +891,6 @@ class MainWindow(QMainWindow):
             self.project.playhead_time = 0.0
             self.header_panel.rebuild()
             # Новый трек тоже должен знать текущее состояние lock
-            self.header_panel.set_segments_locked(self.canvas.segments_locked)
             self._sync_ui(True)
             self.status_label.setText(f'Loaded {len(tracks)} track(s)')
 
@@ -918,6 +900,74 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, 'Open Audio', message)
 
     # --------- Track management ---------
+
+    def add_empty_track(self) -> None:
+        self.record_history()
+        track_id = len(self.project.tracks) + 1
+        # Use the project's max duration so automation spans the full timeline
+        project_duration = self.project.duration()
+        track = TrackModel(
+            track_id=track_id,
+            name=f'Track {track_id}',
+            file_path='',
+            duration=project_duration,
+            locked=False,
+        )
+        # Re-set automation to span the full project duration (not 0.1 fallback)
+        if project_duration > 0:
+            track.automation_points = [
+                AutomationPoint(0.0, 0.5),
+                AutomationPoint(project_duration, 0.5),
+            ]
+        # Empty track must have NO segments — segments represent audio content.
+        # Having a segment spanning [0, duration] blocks cross-track drag-and-drop.
+        track.segments = []
+        self.project.tracks.append(track)
+        self.project.selected_track = len(self.project.tracks) - 1
+        self.header_panel.rebuild()
+        self._sync_ui(True)
+        self.status_label.setText(f'Added empty track: {track.name}')
+
+    def remove_selected_track(self) -> None:
+        idx = self.project.selected_track
+        if idx is None or not (0 <= idx < len(self.project.tracks)):
+            self.status_label.setText('No track selected')
+            return
+        self.remove_track(idx)
+
+    def reorder_tracks(self, from_index: int, to_index: int) -> None:
+        if from_index == to_index:
+            return
+        if not (0 <= from_index < len(self.project.tracks)):
+            return
+        if not (0 <= to_index < len(self.project.tracks)):
+            return
+        if self.project.playing:
+            self.stop_playback(return_to_anchor=False)
+        self.record_history()
+        track = self.project.tracks.pop(from_index)
+        self.project.tracks.insert(to_index, track)
+        # Re-number track IDs
+        for i, t in enumerate(self.project.tracks, start=1):
+            t.track_id = i
+        # Update selected_track to follow the moved track
+        if self.project.selected_track == from_index:
+            self.project.selected_track = to_index
+        elif self.project.selected_track is not None:
+            old_sel = self.project.selected_track
+            if from_index < old_sel <= to_index:
+                self.project.selected_track = old_sel - 1
+            elif to_index <= old_sel < from_index:
+                self.project.selected_track = old_sel + 1
+        # Clear segment selections (indexes are invalidated)
+        self.project.selected_segment = None
+        self.project.selected_segments = []
+        self.project.selected_point = None
+        self.canvas.invalidate_waveform_cache()
+        self.header_panel.rebuild()
+        self._refresh_audio_mix()
+        self._sync_ui(True)
+        self.status_label.setText(f'Track moved: {track.name}')
 
     def remove_track(self, index: int) -> None:
         if not (0 <= index < len(self.project.tracks)):
@@ -941,7 +991,6 @@ class MainWindow(QMainWindow):
         self.project.selected_segment = None
         self.project.selected_segments = []
         self.header_panel.rebuild()
-        self.header_panel.set_segments_locked(self.canvas.segments_locked)
         self._sync_ui(True)
 
     def toggle_solo(self, index: int) -> None:
@@ -997,13 +1046,6 @@ class MainWindow(QMainWindow):
     def _current_playback_range(self) -> Tuple[float, Optional[float]]:
         total_duration = self.project.duration()
         current = max(0.0, min(self.project.playhead_time, total_duration))
-        if self.project.selection_range:
-            sel_start, sel_end = self.project.selection_range
-            if sel_end <= sel_start:
-                return current, total_duration
-            if current < sel_start or current >= sel_end:
-                current = sel_start
-            return current, sel_end
         return current, total_duration
 
     def toggle_play_pause(self) -> None:
@@ -1025,7 +1067,7 @@ class MainWindow(QMainWindow):
         self.project.play_range_end = end
         self.project.playhead_time = start
         self.project.playing = True
-        self.audio_engine.play(start, end, bool(self.project.selection_range))
+        self.audio_engine.play(start, end, False)
         self.audio_poll_timer.start()
         self._sync_ui(False)
 
@@ -1054,7 +1096,6 @@ class MainWindow(QMainWindow):
     def project_to_dict(self, include_audio: bool = False) -> dict:
         return {
             'playhead_time': self.project.playhead_time,
-            'selection_range': list(self.project.selection_range) if self.project.selection_range else None,
             'loop_range': list(self.project.loop_range) if self.project.loop_range else None,
             'play_range_start': self.project.play_range_start,
             'play_range_end': self.project.play_range_end,
@@ -1071,6 +1112,7 @@ class MainWindow(QMainWindow):
                     'duration': track.duration,
                     'solo': track.solo,
                     'mute': track.mute,
+                    'locked': track.locked,
                     'automation_points': [asdict(p) for p in track.automation_points],
                     'segments': [asdict(s) for s in track.segments],
                     'sample_rate': track.sample_rate,
@@ -1104,12 +1146,16 @@ class MainWindow(QMainWindow):
         try:
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(self.project_to_dict(include_audio=False), f, ensure_ascii=False, indent=2)
+            self._add_recent_project(path)
+            self._project_dirty = False
             self.status_label.setText(f'Project saved: {os.path.basename(path)}')
             self._sync_ui(False)
         except Exception as exc:
             QMessageBox.critical(self, 'Save Project', f'Failed to save project.\n\n{exc}')
 
     def open_project_dialog(self) -> None:
+        if not self._check_unsaved():
+            return
         path, _ = QFileDialog.getOpenFileName(
             self, 'Open Project', '', 'SimpleSound Project (*.ssproj)',
         )
@@ -1117,17 +1163,114 @@ class MainWindow(QMainWindow):
             self.load_project(path)
 
     def load_project(self, path: str) -> None:
+        if not self._check_unsaved():
+            return
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             data['project_path'] = path
             self.history.clear()
             self._restore_project_from_dict(data)
-            self.header_panel.set_segments_locked(self.canvas.segments_locked)
+            self._add_recent_project(path)
+            self._project_dirty = False
             self.record_history()
             self.status_label.setText(f'Project loaded: {os.path.basename(path)}')
         except Exception as exc:
             QMessageBox.critical(self, 'Open Project', f'Failed to open project.\n\n{exc}')
+
+    def new_project(self) -> None:
+        if not self._check_unsaved():
+            return
+        self.stop_playback()
+        self.project = ProjectModel()
+        self.header_panel.project = self.project
+        self.canvas.project = self.project
+        if self.audio_engine is not None:
+            self.audio_engine.set_project(self.project)
+        self.history.clear()
+        self._project_dirty = False
+        self.canvas.invalidate_waveform_cache()
+        self.header_panel.rebuild()
+        self._sync_ui(True)
+        self.record_history()
+        self.status_label.setText('New project created')
+
+    def _check_unsaved(self) -> bool:
+        """Returns True if it's safe to proceed (saved or user chose to discard)."""
+        if not self._project_dirty:
+            return True
+        # Don't ask to save an empty project (no tracks)
+        if not self.project.tracks:
+            return True
+        reply = QMessageBox.warning(
+            self, 'Unsaved Changes',
+            'The current project has unsaved changes.\nDo you want to save before continuing?',
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save,
+        )
+        if reply == QMessageBox.Save:
+            self.save_project()
+            return not self._project_dirty  # False if save was cancelled
+        elif reply == QMessageBox.Discard:
+            return True
+        else:
+            return False
+
+    def closeEvent(self, event) -> None:
+        if not self._check_unsaved():
+            event.ignore()
+            return
+        if self.audio_engine is not None:
+            self.audio_engine.stop()
+            if hasattr(self.audio_engine, '_stream') and self.audio_engine._stream is not None:
+                try:
+                    self.audio_engine._stream.close()
+                except Exception:
+                    pass
+        super().closeEvent(event)
+
+    # --------- Recent Projects ---------
+
+    _RECENT_FILE = os.path.join(os.path.expanduser('~'), '.simplesound_recent.json')
+    _MAX_RECENT = 5
+
+    def _load_recent_projects(self) -> List[str]:
+        try:
+            if os.path.exists(self._RECENT_FILE):
+                with open(self._RECENT_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                return [p for p in data if isinstance(p, str) and os.path.exists(p)][:self._MAX_RECENT]
+        except Exception:
+            pass
+        return []
+
+    def _save_recent_projects(self, paths: List[str]) -> None:
+        try:
+            with open(self._RECENT_FILE, 'w', encoding='utf-8') as f:
+                json.dump(paths[:self._MAX_RECENT], f)
+        except Exception:
+            pass
+
+    def _add_recent_project(self, path: str) -> None:
+        recents = self._load_recent_projects()
+        path = os.path.abspath(path)
+        recents = [p for p in recents if os.path.abspath(p) != path]
+        recents.insert(0, path)
+        self._save_recent_projects(recents[:self._MAX_RECENT])
+        self._rebuild_recent_menu()
+
+    def _rebuild_recent_menu(self) -> None:
+        self.recent_menu.clear()
+        recents = self._load_recent_projects()
+        if not recents:
+            act = self.recent_menu.addAction('(no recent projects)')
+            act.setEnabled(False)
+            return
+        for path in recents:
+            name = os.path.basename(path)
+            act = self.recent_menu.addAction(name)
+            act.setToolTip(path)
+            act.triggered.connect(lambda checked, p=path: self.load_project(p))
 
     # --------- Lifecycle ---------
 
@@ -1144,3 +1287,33 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         super().closeEvent(event)
+
+    # --------- Window-level Drag & Drop ---------
+
+    _AUDIO_EXTS = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac'}
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasUrls():
+            if any(
+                os.path.splitext(url.toLocalFile())[1].lower() in self._AUDIO_EXTS
+                for url in event.mimeData().urls() if url.isLocalFile()
+            ):
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:
+        if not event.mimeData().hasUrls():
+            return
+        paths = []
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                path = url.toLocalFile()
+                if os.path.splitext(path)[1].lower() in self._AUDIO_EXTS:
+                    paths.append(path)
+        if paths:
+            self._load_tracks_with_progress(paths)
+            event.acceptProposedAction()
