@@ -733,7 +733,7 @@ class MainWindow(QMainWindow):
     # --------- Playhead control ---------
 
     def set_playhead(self, value: float) -> None:
-        total_duration = self.project.duration()
+        total_duration = self.project.content_duration()
         value = max(0.0, min(float(value), total_duration))
         end = total_duration
         self.project.playhead_time = value
@@ -755,7 +755,7 @@ class MainWindow(QMainWindow):
         self.scroll_timeline_to_time(0.0, align='left')
 
     def jump_to_end(self) -> None:
-        end_time = self.project.duration()
+        end_time = self.project.content_duration()
         self.set_playhead(end_time)
         self.scroll_timeline_to_time(end_time, align='right')
 
@@ -1053,7 +1053,7 @@ class MainWindow(QMainWindow):
     # --------- Playback ---------
 
     def _current_playback_range(self) -> Tuple[float, Optional[float]]:
-        total_duration = self.project.duration()
+        total_duration = self.project.content_duration()
         current = max(0.0, min(self.project.playhead_time, total_duration))
         return current, total_duration
 

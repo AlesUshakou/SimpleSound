@@ -306,6 +306,17 @@ class TrackModel:
         )
         self.segments[seg_index] = new_seg
         self.segments.sort(key=lambda s: s.start)
+        # Переносим точки автоматизации, лежащие под сегментом, вместе с ним.
+        # ВАЖНО: не вызываем здесь _ensure_automation_bounds() — он вставляет
+        # граничные точки в 0/duration, а так как move_segment вызывается на
+        # каждое движение мыши при драге, точки будут плодиться на каждый тик.
+        if self.automation_points:
+            self.automation_points = [
+                AutomationPoint(p.time + clamped_delta, p.value)
+                if seg.start <= p.time <= seg.end else p
+                for p in self.automation_points
+            ]
+            self.automation_points.sort(key=lambda p: p.time)
         return True
 
     def can_accept_segment(self, seg_start: float, seg_end: float, exclude_seg: Optional['TrackSegment'] = None) -> bool:
@@ -500,7 +511,9 @@ class TrackModel:
         if self.automation_points[-1].time < self.duration:
             self.automation_points.append(AutomationPoint(self.duration, self.automation_points[-1].value))
         else:
-            self.automation_points[-1].time = self.duration
+            # Не прижимаем точку обратно к duration: она может легально жить
+            # правее (таймлайн расширен до duration + 120, как и сегменты).
+            self.automation_points[-1].time = min(self.automation_points[-1].time, self.duration + 120.0)
 
 
 @dataclass
@@ -531,6 +544,24 @@ class ProjectModel:
         if not self.tracks:
             return 0.0
         return max(track.duration for track in self.tracks)
+
+    def content_duration(self) -> float:
+        """Правый край реально звучащего содержимого по всем трекам.
+
+        В отличие от duration() (длина самого длинного аудио-буфера) здесь
+        учитываются концы сегментов, которые могли быть утянуты правее конца
+        исходного аудио. Это и есть длина «самого длинного трека» для
+        воспроизведения и экспорта — playhead и рендер доходят до конца
+        самого правого сегмента, а не обрезают утянутый хвост."""
+        extent = 0.0
+        for track in self.tracks:
+            for seg in track.segments:
+                if seg.end > extent:
+                    extent = seg.end
+            # Трек с аудио, но без сегментов — учитываем длину самого аудио.
+            if not track.segments and track.duration > extent:
+                extent = track.duration
+        return extent
 
     def active_track_indexes(self) -> List[int]:
         soloed = [i for i, t in enumerate(self.tracks) if t.solo]

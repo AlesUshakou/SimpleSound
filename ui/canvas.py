@@ -133,8 +133,29 @@ class TimelineCanvas(QWidget):
         self._update_minimum_size()
         self.update()
 
+    def _content_extent_seconds(self) -> float:
+        """Правый край осмысленного содержимого таймлайна по всем трекам.
+
+        В отличие от project.duration() (это лишь длина самого длинного аудио),
+        здесь учитываются концы сегментов и точки автоматизации, которые могли
+        быть утянуты правее конца аудио — чтобы canvas мог вырасти под них, а не
+        обрезал их. Совпадает с верхней границей сегментов/точек в models
+        (track.duration + 120.0)."""
+        extent = self.project.duration()
+        for track in self.project.tracks:
+            for seg in track.segments:
+                if seg.end > extent:
+                    extent = seg.end
+            for point in track.automation_points:
+                if point.time > extent:
+                    extent = point.time
+        return extent
+
+    def _width_for_seconds(self, seconds: float) -> int:
+        return int(max(1000, self.LEFT_PADDING * 2 + seconds * self.px_per_second + 120))
+
     def _update_minimum_size(self) -> None:
-        content_w = int(max(1000, self.LEFT_PADDING * 2 + self.project.duration() * self.px_per_second + 120))
+        content_w = self._width_for_seconds(self._content_extent_seconds())
         if not self.project.tracks:
             # Без треков — заполняем всю доступную высоту, ruler не показываем
             self.setMinimumSize(content_w, 200)
@@ -142,6 +163,17 @@ class TimelineCanvas(QWidget):
             content_h = self.RULER_HEIGHT + len(self.project.tracks) * self.track_height
             self.setMinimumSize(content_w, content_h + 2)
         self.resize(self.minimumSize())
+
+    def _grow_canvas_during_drag(self) -> None:
+        """Во время драга расширяет canvas (только вширь, без сужения), чтобы
+        утянутое вправо содержимое не обрезалось. resize() меняет диапазон
+        области прокрутки, а тот через rangeChanged синхронизирует таймлайн-
+        скроллбар. Окончательный размер пересчитывается в mouseReleaseEvent."""
+        needed_w = self._width_for_seconds(self._content_extent_seconds())
+        if needed_w > self.width():
+            self.setMinimumWidth(needed_w)
+            self.resize(needed_w, self.height())
+            self.update()
 
     def time_to_x(self, sec: float) -> float:
         return self.LEFT_PADDING + sec * self.px_per_second
@@ -625,7 +657,7 @@ class TimelineCanvas(QWidget):
         track = self.project.tracks[track_index]
         self._begin_mutation()
         new_point = AutomationPoint(
-            time=max(0.0, min(track.duration, self.x_to_time(pos.x()))),
+            time=max(0.0, min(track.duration + 120.0, self.x_to_time(pos.x()))),
             value=self.y_to_automation_value(track_index, pos.y()),
         )
         track.automation_points.append(new_point)
@@ -797,12 +829,14 @@ class TimelineCanvas(QWidget):
             track_index, point_index = self.dragging_point
             track = self.project.tracks[track_index]
             point = track.automation_points[point_index]
-            point.time = max(0.0, min(track.duration, self.x_to_time(pos.x())))
+            # Точки могут жить на всём таймлайне (как сегменты): до duration + 120
+            point.time = max(0.0, min(track.duration + 120.0, self.x_to_time(pos.x())))
             point.value = self.y_to_automation_value(track_index, pos.y())
             track.automation_points.sort(key=lambda p: p.time)
             self.project.selected_point = (track_index, track.automation_points.index(point))
             self.project_changed.emit()
             self.update()
+            self._grow_canvas_during_drag()
             self._update_hover_cursor(pos)
             return
         if self.dragging_segment:
@@ -849,6 +883,7 @@ class TimelineCanvas(QWidget):
                 if track.trim_segment(seg_index, edge, current):
                     self.project_changed.emit()
                     self.update()
+            self._grow_canvas_during_drag()
             self._update_hover_cursor(pos)
             return
         if self.pending_segment_hit and self.mouse_press_pos is not None:
@@ -906,6 +941,10 @@ class TimelineCanvas(QWidget):
         self._cross_track_valid = False
         self._drag_origin_track = None
         self._drag_origin_seg_snapshot = None
+        # Пересчитываем итоговый размер под фактический контент (после драга
+        # сегмент/точка могли расширить таймлайн вправо — или, наоборот,
+        # уехать левее, и тогда лишнюю ширину можно вернуть).
+        self._update_minimum_size()
         self.project_changed.emit()
         self.update()
         self._update_hover_cursor(release_pos)

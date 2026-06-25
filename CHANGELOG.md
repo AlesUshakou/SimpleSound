@@ -1,5 +1,26 @@
 # Changelog
 
+# 22 June 2026
+
+## models.py
+- **`ProjectModel.content_duration()` added.** Returns the right edge of the actual audible content — the maximum segment end across all tracks (falling back to `track.duration` for tracks with no segments). Unlike `duration()` (length of the longest audio buffer), it accounts for segments dragged past the end of their source audio.
+
+## main_window.py
+- **Playback and playhead now use `content_duration()`.** `_current_playback_range()`, `set_playhead()`, and `jump_to_end()` use the new method instead of `duration()`. The playhead and playback range now reach the end of the rightmost segment across all tracks, instead of being clipped to the audio length.
+
+## export_dialog.py
+- **Export renders against `content_duration()`.** `_RenderWorker.run()` takes the render length from the rightmost segment rather than the audio buffer length, so segment tails dragged to the right are no longer cut off on export.
+
+---
+
+# 18 June 2026
+
+## export_dialog.py
+- **24-bit WAV export fixed.** Bit-depth 24 now packs the low 3 bytes of each little-endian int32 sample (`sample_width=3`) instead of emitting the full 4-byte int32. Previously the byte count was not a multiple of `sample_width * channels`, which raised the *"data length must be a multiple of (sample_width * channels)"* error on WAV export.
+- **Slow MP3 (and resampled) export fixed.** The offline mix now always renders at the native in-memory rate (`TARGET_SAMPLE_RATE`, 48000 Hz) and lets pydub resample to the user-chosen output rate via `set_frame_rate` at the very end. Rendering directly at a different output rate read the source buffers at the wrong stride, so files exported at 44100 Hz (the MP3 default) played back too slow.
+
+---
+
 # 28 April 2026 — Session 2
 
 ## export_dialog.py *(new file — `ui/`)*

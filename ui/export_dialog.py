@@ -225,20 +225,29 @@ class _RenderWorker(QObject):
 
         try:
             project = self.project
-            duration = project.duration()
+            # Длина рендера — по самому правому сегменту среди всех треков
+            # (а не по длине аудио-буфера), чтобы утянутые вправо хвосты
+            # сегментов не обрезались при экспорте.
+            duration = project.content_duration()
             if duration <= 0.0:
                 self.failed.emit('Project is empty — nothing to export.')
                 return
 
-            sr = int(self.params.get('sample_rate', str(TARGET_SAMPLE_RATE)))
+            # The mix logic assumes source audio is sampled at the in-memory
+            # native rate (TARGET_SAMPLE_RATE). We always render at that rate
+            # and let pydub resample to the user-chosen output rate at the end.
+            # Rendering directly at a different rate would read the source
+            # buffers at the wrong stride and play back too slow (or too fast).
+            render_sr = TARGET_SAMPLE_RATE
+            out_sr = int(self.params.get('sample_rate', str(TARGET_SAMPLE_RATE)))
             channels = TARGET_CHANNELS
             render_tracks = self._build_render_tracks(project)
             if not render_tracks:
                 self.failed.emit('No audible tracks to export (all muted or empty).')
                 return
 
-            total_frames = int(round(duration * sr))
-            block_size = sr  # 1-second blocks
+            total_frames = int(round(duration * render_sr))
+            block_size = render_sr  # 1-second blocks
             result = np.zeros((total_frames, channels), dtype=np.float32)
             written = 0
 
@@ -247,32 +256,41 @@ class _RenderWorker(QObject):
                     self.failed.emit('Export cancelled.')
                     return
                 take = min(block_size, total_frames - written)
-                start_sec = written / float(sr)
-                block = self._mix_block(render_tracks, start_sec, take, sr, channels)
+                start_sec = written / float(render_sr)
+                block = self._mix_block(render_tracks, start_sec, take, render_sr, channels)
                 result[written: written + take] = block
                 written += take
                 self.progress.emit(int(100 * written / total_frames))
 
-            # Convert float32 [-1,1] → int samples for pydub
+            # Convert float32 [-1,1] → packed little-endian int samples for pydub.
+            np.clip(result, -1.0, 1.0, out=result)
             bit_depth = int(self.params.get('bit_depth', '16'))
-            sample_width = bit_depth // 8
             if bit_depth == 32:
-                # pydub supports up to 32-bit, store as int32
-                pcm = (result * 2147483647.0).astype(np.int32)
+                pcm_bytes = (result * 2147483647.0).astype('<i4').tobytes()
+                sample_width = 4
             elif bit_depth == 24:
-                # pydub 24-bit: store as int32, set sample_width=3
-                pcm = (result * 8388607.0).astype(np.int32)
+                # 24-bit signed: pack the low 3 bytes of each little-endian
+                # int32 sample. Emitting raw int32 (4 bytes) while telling pydub
+                # sample_width=3 makes the byte count indivisible by
+                # sample_width*channels — that is the WAV "data length must be a
+                # multiple of (sample_width * channels)" error.
+                flat = (result.reshape(-1) * 8388607.0).astype('<i4')
+                pcm_bytes = np.ascontiguousarray(
+                    flat.view(np.uint8).reshape(-1, 4)[:, :3]
+                ).tobytes()
                 sample_width = 3
             else:
-                pcm = (result * 32767.0).astype(np.int16)
+                pcm_bytes = (result * 32767.0).astype('<i2').tobytes()
                 sample_width = 2
 
             seg = AudioSegment(
-                data=pcm.tobytes(),
+                data=pcm_bytes,
                 sample_width=sample_width,
-                frame_rate=sr,
+                frame_rate=render_sr,
                 channels=channels,
             )
+            if out_sr != render_sr:
+                seg = seg.set_frame_rate(out_sr)
 
             fmt = self.fmt.upper()
             export_params: Dict[str, Any] = {}
